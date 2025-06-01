@@ -12,12 +12,61 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import adminLoginRouter from './routes/adminLogin.js';
 import { subDays, format } from 'date-fns';
+import fs from 'fs';
 
 // Configuración para ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
+// Explicitamente configurar dotenv para cargar .env desde el directorio del backend
+const dotEnvPath = path.resolve(__dirname, '.env');
+
+// ---- INICIO DIAGNÓSTICO FS ----
+console.log('[FS DIAGNOSTIC] Intentando verificar existencia de:', dotEnvPath);
+try {
+  if (fs.existsSync(dotEnvPath)) {
+    console.log('[FS DIAGNOSTIC] fs.existsSync dice: El archivo SÍ existe.');
+    try {
+      const fileContent = fs.readFileSync(dotEnvPath, 'utf8');
+      console.log('[FS DIAGNOSTIC] fs.readFileSync leyó el archivo. Primeras 100 chars:', fileContent.substring(0, 100));
+    } catch (readErr) {
+      console.error('[FS DIAGNOSTIC] fs.readFileSync falló al leer el archivo:', readErr);
+    }
+  } else {
+    console.warn('[FS DIAGNOSTIC] fs.existsSync dice: El archivo NO existe.');
+  }
+} catch (accessErr) {
+  console.error('[FS DIAGNOSTIC] Error general al verificar la existencia del archivo con fs:', accessErr);
+}
+// ---- FIN DIAGNÓSTICO FS ----
+
+const dotenvResult = dotenv.config({ path: dotEnvPath });
+
+if (dotenvResult.error) {
+  console.error('\n[DOTENV ERROR] Error al cargar el archivo .env:');
+  console.error(dotenvResult.error);
+  console.error('[DOTENV INFO] Se intentó cargar .env desde:', dotEnvPath);
+  console.error('Por favor, asegúrate de que el archivo backend/.env exista, no esté vacío y tenga los permisos correctos.\n');
+} else if (!dotenvResult.parsed || Object.keys(dotenvResult.parsed).length === 0) {
+  console.warn('\n[DOTENV WARNING] El archivo .env se cargó pero está vacío o no contiene asignaciones válidas.');
+  console.warn('[DOTENV INFO] Se cargó .env desde:', dotEnvPath);
+  console.warn('[DOTENV INFO] Contenido parseado (si lo hay):', dotenvResult.parsed);
+  console.warn('Por favor, verifica el contenido de backend/.env.\n');
+} else {
+  console.log('\n[DOTENV SUCCESS] Archivo .env cargado exitosamente desde:', dotEnvPath);
+  // Opcional: listar las variables cargadas (sin contraseñas)
+  // const loadedVars = { ...dotenvResult.parsed };
+  // delete loadedVars.DB_PASSWORD; // No mostrar la contraseña
+  // console.log('[DOTENV INFO] Variables cargadas:', loadedVars, '\n');
+}
+
+// DIAGNOSTIC LOGS - INICIO
+console.log('[DIAGNÓSTICO ENV] DB_HOST:', process.env.DB_HOST);
+console.log('[DIAGNÓSTICO ENV] DB_PORT:', process.env.DB_PORT);
+console.log('[DIAGNÓSTICO ENV] DB_NAME:', process.env.DB_NAME);
+console.log('[DIAGNÓSTICO ENV] DB_USER:', process.env.DB_USER);
+// No imprimimos DB_PASSWORD por seguridad, pero verifica que esté en tu .env
+// DIAGNOSTIC LOGS - FIN
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -105,33 +154,64 @@ app.use('/api', apiLimiter);
 // Middleware de autenticación
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  let token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Token no proporcionado' });
   }
 
+  const testTokenPrefix = 'test-jwt-token-';
+  let isTestUserToken = false;
+
+  if (token.startsWith(testTokenPrefix)) {
+    token = token.substring(testTokenPrefix.length);
+    isTestUserToken = true;
+  }
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'test_secret');
     
-    // Si es el usuario de prueba, usar datos mock
-    if (decoded.id === TEST_USER.id) {
-      req.user = TEST_USER;
+    // Si es el usuario de prueba (identificado por el prefijo O por el ID en el token)
+    // Es importante que el payload del token de prueba contenga userId
+    if (isTestUserToken && decoded.userId === TEST_USER.id) {
+      req.user = { ...TEST_USER, id: decoded.userId }; // Aseguramos que req.user.id sea consistente
+      console.log('[Auth Middleware] Test user authenticated:', req.user.name);
+      next();
+      return;
+    } else if (decoded.userId === TEST_USER.id) { // Fallback por si el prefijo se pierde pero el ID es de test
+      req.user = { ...TEST_USER, id: decoded.userId };
+      console.warn('[Auth Middleware] Test user authenticated by ID match (prefix might have been lost):', req.user.name);
       next();
       return;
     }
+    
 
     // Verificar si el usuario sigue activo o si su rol ha cambiado
     try {
-      const userQuery = await pool.query('SELECT id, email, role, is_active FROM admin_users WHERE id = $1', [decoded.id]);
+      const userQuery = await pool.query('SELECT id, email, role, is_active FROM admin_users WHERE id = $1', [decoded.userId]); // Usar decoded.userId
       if (userQuery.rows.length === 0 || !userQuery.rows[0].is_active) {
+          console.log('[Auth Middleware] User not found or inactive:', decoded.userId);
           return res.status(403).json({ error: 'Usuario no válido o inactivo.' });
       }
       req.user = userQuery.rows[0]; // Usar datos frescos de la BD
+      console.log('[Auth Middleware] Real user authenticated:', req.user.email);
     } catch (dbError) {
       // Si falla la conexión a BD, usar datos del token para pruebas
       console.warn('Database connection failed, using token data for testing:', dbError.message);
-      req.user = decoded;
+      // Para usuarios reales, si la BD falla, no deberíamos confiar ciegamente en el token
+      // ya que el estado (is_active, role) podría haber cambiado.
+      // Considerar denegar el acceso o tener una política más estricta aquí.
+      // Por ahora, para mantener la lógica original en caso de fallo de BD con user real:
+      // Pero es importante asegurar que el token de un usuario real no se confunda con el de TEST_USER
+      if (decoded.email === TEST_USER.email && decoded.userId === TEST_USER.id) {
+         console.warn('[Auth Middleware] DB Error, but token matches TEST_USER structure. Treating as test user.');
+         req.user = { ...TEST_USER, id: decoded.userId };
+      } else {
+        // Si no es el usuario de prueba y falla la BD, se podría considerar inválido.
+        // O usar los datos del token como fallback, pero con un warning.
+        console.warn('[Auth Middleware] DB Error. Using potentially stale token data for user:', decoded.email);
+        req.user = { id: decoded.userId, email: decoded.email, role: decoded.role, is_active: true }; // Asumir is_active true desde el token es un riesgo
+      }
     }
     next();
   } catch (error) {
@@ -232,20 +312,47 @@ const TEST_USER = {
 // Ruta de login de prueba para testing
 app.post('/api/auth/test-login', async (req, res) => {
   try {
-    const token = jwt.sign(
-      { id: TEST_USER.id, email: TEST_USER.email, name: TEST_USER.name, role: TEST_USER.role },
-      process.env.JWT_SECRET || 'test_secret',
-      { expiresIn: '24h' }
+    // Datos del usuario de prueba (puedes ajustarlos según necesidad)
+    const testUserData = {
+      userId: TEST_USER.id || 'test-user-001', // Asegúrate de que TEST_USER.id exista o usa un fallback
+      name: TEST_USER.name || 'Usuario de Pruebas',
+      email: TEST_USER.email || 'test@example.com',
+      role: TEST_USER.role || 'admin',
+      picture: TEST_USER.picture || null
+    };
+
+    const standardToken = jwt.sign(
+      // Payload del token
+      { 
+        userId: testUserData.userId, // Es importante que este campo (userId) coincida con lo que espera tu middleware de autenticación general
+        name: testUserData.name,
+        email: testUserData.email,
+        role: testUserData.role,
+        picture: testUserData.picture
+      },
+      process.env.JWT_SECRET || 'test_secret', // Usa la misma secret que tu middleware de autenticación general
+      { expiresIn: '24h' } // Tiempo de expiración del token
     );
+
+    // **Añadir el prefijo esperado por el frontend para parseo especial del token de prueba**
+    const prefixedToken = `test-jwt-token-${standardToken}`;
+
+    console.log(`[Auth Test Login] Test user login successful for: ${testUserData.name} (${testUserData.role})`);
 
     res.json({
       success: true,
-      token,
-      user: { id: TEST_USER.id, email: TEST_USER.email, name: TEST_USER.name, picture: TEST_USER.picture, role: TEST_USER.role }
+      token: prefixedToken, // Enviar el token con el prefijo
+      user: { // El objeto user que espera el frontend
+        id: testUserData.userId, // El frontend podría esperar 'id' aquí
+        name: testUserData.name,
+        email: testUserData.email,
+        role: testUserData.role,
+        picture: testUserData.picture
+      }
     });
   } catch (error) {
-    console.error('Error en login de prueba:', error);
-    res.status(500).json({ error: 'Error en login de prueba' });
+    console.error('Error en login de prueba (/api/auth/test-login):', error);
+    res.status(500).json({ success: false, error: 'Error interno en login de prueba' });
   }
 });
 
@@ -422,6 +529,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 
     } catch (dbError) {
       // Si falla la BD, usar datos mock
+      console.error('[Products Route DB Error] Fallo al conectar/consultar la base de datos:', dbError);
       console.warn('Database error, using mock data:', dbError.message);
       
       let filteredProducts = [...MOCK_DATA.products];
@@ -502,6 +610,7 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
       res.json({ success: true, data: result.rows });
     } catch (dbError) {
       // Si falla la BD, usar datos mock
+      console.error('[Categories Route DB Error] Fallo al conectar/consultar la base de datos:', dbError);
       console.warn('Database error, using mock data:', dbError.message);
       res.json({ success: true, data: MOCK_DATA.categories });
     }
@@ -610,6 +719,7 @@ app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
       res.json({ success: true, data: result.rows[0] });
     } catch (dbError) {
       // Si falla la BD, usar datos mock
+      console.error('[Dashboard Route DB Error] Fallo al conectar/consultar la base de datos:', dbError);
       console.warn('Database error, using mock data:', dbError.message);
       
       // Generar datos mock para las gráficas
