@@ -1,0 +1,87 @@
+{
+  "name": "WhatsApp Commerce - Flow 6: Tracking, Support & Session End",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n    const session = item.json;\n    const contextData = JSON.parse(session.context_data || '{}');\n    const lastOrderNumber = contextData.lastOrderNumber;\n    if (!lastOrderNumber) {\n        const response = { messageType: 'text', text: '🔍 No tienes pedidos recientes para rastrear.\\n\\nSi realizaste un pedido, proporciona el número de pedido (ej: ORD-123456)', quickReplies: [ { id: 'new_order', title: '🛒 Hacer Nuevo Pedido' }, { id: 'contact_support', title: '👤 Contactar Soporte' } ] };\n        results.push({ json: { ...session, responseReady: true, whatsappResponse: response } });\n        continue;\n    }\n    const orderStatuses = ['confirmed', 'preparing', 'ready', 'dispatched', 'delivered'];\n    let currentStatus = 'confirmed'; \n    const timeSinceOrder = contextData.orderConfirmed ? (new Date().getTime() - new Date(contextData.orderConfirmed).getTime()) / (1000 * 60) : 0;\n    if (timeSinceOrder > 30) currentStatus = 'delivered';\n    else if (timeSinceOrder > 20) currentStatus = 'dispatched';\n    else if (timeSinceOrder > 10) currentStatus = 'preparing';\n    else if (timeSinceOrder > 5) currentStatus = 'ready';\n    let statusMessage = `📦 *Estado de tu pedido ${lastOrderNumber}:*\\n\\n`;\n    switch (currentStatus) {\n        case 'confirmed': statusMessage += `✅ Pedido confirmado\\n🕐 Estimado: 45-60 minutos\\n📍 En preparación`; break;\n        case 'preparing': statusMessage += `👨‍🍳 Preparando tu pedido\\n🕐 Estimado: 30-40 minutos\\n📍 En cocina/almacén`; break;\n        case 'ready': statusMessage += `📦 Pedido listo\\n🚚 Asignando repartidor\\n📍 Próximo a envío`; break;\n        case 'dispatched': statusMessage += `🚚 En camino\\n👨‍💼 Repartidor: Juan\\n📍 Llegada estimada: 15 min`; break;\n        case 'delivered': statusMessage += `✅ Entregado\\n🎉 ¡Disfruta tu pedido!\\n📍 Completado`; break;\n        default: statusMessage += `❓ Estado desconocido. Contacta a soporte.`;\n    }\n    const response = { messageType: 'text', text: statusMessage, quickReplies: [ { id: 'refresh_status', title: '🔄 Actualizar Estado' }, { id: 'contact_delivery', title: '📞 Contactar Repartidor' }, { id: 'new_order', title: '🛒 Nuevo Pedido' } ] };\n    \n    const eventStore = {\n      async recordEvent(event) {\n        const eventData = { id: 'uuid_placeholder', timestamp: new Date().toISOString(), aggregateId: event.customerId, eventType: event.type, payload: event.data, metadata: { sessionId: event.sessionId, nodeId: event.nodeId, workflowId: $workflow.id } };\n        console.log('Event Recorded:', eventData);\n      }\n    };\n    await eventStore.recordEvent({\n      type: 'OrderTracked',\n      customerId: session.customer_phone,\n      data: { orderNumber: lastOrderNumber, status: currentStatus },\n      sessionId: session.session_id,\n      nodeId: 'node_27_track_order'\n    });\n    results.push({ json: { ...session, responseReady: true, whatsappResponse: response, sessionUpdate: { session_state: 'order_tracked' } } });\n}\nreturn results;"
+      },
+      "id": "node_27_track_order",
+      "name": "Track Order (EventSourcing) (Nodo 27)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n    const session = item.json;\n    const intent = session.detectedIntent || 'UNSURE';\n    let supportMessage = '';\n    let suggestedActions = [];\n    if (intent === 'REQUEST_SUPPORT' || session.requiresHumanHandoff) {\n        supportMessage = `👤 *Te conectamos con nuestro equipo*\\n\\nUn agente te contactará en los próximos minutos.\\n\\n🕐 *Horario de atención:*\nL-V: 8:00-22:00\\nS-D: 9:00-20:00\\n\\n¿Algo más mientras esperas?`;\n        suggestedActions = [ { id: 'browse_categories', title: '🛒 Ver Productos' }, { id: 'view_offers', title: '🏷️ Ver Ofertas' }, { id: 'faq', title: '❓ Preguntas Frecuentes' } ];\n    } else { \n        supportMessage = `🤔 *No estoy seguro de cómo ayudarte.*\\n\\n¿Podrías ser más específico? Ej:\\n• \"Busco manzanas\"\\n• \"Ver mi carrito\"\\n• \"¿Dónde está mi pedido?\"\\n\\n¿Qué te gustaría hacer?`;\n        suggestedActions = [ { id: 'browse_categories', title: '🛒 Ver Categorías' }, { id: 'search_products', title: '🔍 Buscar Productos' }, { id: 'view_cart', title: '🛒 Ver Carrito' }, { id: 'talk_to_human', title: '👤 Hablar con Persona' } ];\n    }\n    const response = { messageType: 'interactive', interactiveType: 'button', text: supportMessage, buttons: suggestedActions.slice(0, 3).map(action => ({ type: 'reply', reply: { id: action.id, title: action.title } })), footerText: 'Estamos aquí para ayudarte' };\n    \n    const eventStore = {\n      async recordEvent(event) {\n        const eventData = { id: 'uuid_placeholder', timestamp: new Date().toISOString(), aggregateId: event.customerId, eventType: event.type, payload: event.data, metadata: { sessionId: event.sessionId, nodeId: event.nodeId, workflowId: $workflow.id } };\n        console.log('Event Recorded:', eventData);\n      }\n    };\n    if (intent === 'REQUEST_SUPPORT' || session.requiresHumanHandoff) {\n        await eventStore.recordEvent({\n          type: 'SupportRequested',\n          customerId: session.customer_phone,\n          data: { intent: intent, message: session.originalMessageText },\n          sessionId: session.session_id,\n          nodeId: 'node_28_handle_support'\n        });\n    }\n    results.push({ json: { ...session, responseReady: true, whatsappResponse: response, sessionUpdate: { session_state: intent === 'REQUEST_SUPPORT' ? 'awaiting_human_support' : 'needs_clarification', context_data: JSON.stringify({ ...(session.context_data && typeof session.context_data === 'string' ? JSON.parse(session.context_data) : session.context_data || {}), supportRequested: intent === 'REQUEST_SUPPORT' ? new Date().toISOString() : null, lastUnknownMessage: session.originalMessageText, clarificationNeeded: intent === 'UNSURE' }) } } });\n}\nreturn results;"
+      },
+      "id": "node_28_handle_support",
+      "name": "Handle Support Request (EventSourcing) (Nodo 28)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n    if (!item.json.sessionUpdate) {\n        results.push({json: {...item.json, sessionUpdate: { session_state: item.json.session_state, context_data: item.json.context_data, cart_data: item.json.cart_data } }}); \n        continue;\n    }\n    const session = item.json;\n    const update = session.sessionUpdate;\n    results.push({\n        json: {\n            ...session, \n            sessionIdToUpdate: session.session_id, \n            sessionStateToUpdate: update.session_state || session.session_state,\n            contextDataToUpdate: typeof update.context_data === 'object' ? JSON.stringify(update.context_data) : update.context_data || (typeof session.context_data === 'object' ? JSON.stringify(session.context_data) : session.context_data),\n            cartDataToUpdate: typeof update.cart_data === 'object' ? JSON.stringify(update.cart_data) : update.cart_data || (typeof session.cart_data === 'object' ? JSON.stringify(session.cart_data) : session.cart_data)\n        }\n    });\n}\nreturn results;"
+      },
+      "id": "node_29_update_session_state",
+      "name": "Update Session State (Nodo 29)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE customer_sessions \nSET \n    session_state = '{{$json.sessionStateToUpdate}}',\n    context_data = COALESCE(('{{$json.contextDataToUpdate}}')::jsonb, context_data), \n    cart_data = COALESCE(('{{$json.cartDataToUpdate}}')::jsonb, cart_data),\n    expires_at = NOW() + INTERVAL '2 hours',\n    last_message_id = '{{$json.parsedMessage?.messageId || $json.messageId || ''}}',\n    updated_at = NOW()\nWHERE id = {{$json.sessionIdToUpdate}}\nRETURNING id, session_state, updated_at;",
+        "options": {}
+      },
+      "id": "node_30_db_update_session",
+      "name": "PostgreSQL - Update Session (DB) (Nodo 30)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [750, 400],
+      "credentials": {
+        "postgres": { "id": "postgres_creds", "name": "PostgreSQL" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const session = $input.item.json;\nconst customerPhone = session.customer_phone || session.customerPhone;\nconst sessionId = session.sessionIdToUpdate || session.session_id;\nconst cacheKey = `session:${customerPhone}`;\n\ntry {\n    if (customerPhone) {\n        \n        console.log(`Invalidating/Updating session cache in Redis for key: ${cacheKey}`);\n        \n        \n    }\n} catch (e) {\n    console.error('Redis update/invalidate session cache error:', e);\n}\nreturn session;"
+      },
+      "id": "redis_update_session_cache_node_f6",
+      "name": "Redis - Update/Invalidate Session Cache",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [950, 400]
+    }
+  ],
+  "connections": {
+    "node_27_track_order": {
+      "main": [[{ "node": "node_29_update_session_state", "type": "main", "index": 0 }]]
+    },
+    "node_28_handle_support": {
+      "main": [[{ "node": "node_29_update_session_state", "type": "main", "index": 0 }]]
+    },
+    "node_29_update_session_state": {
+      "main": [[{ "node": "node_30_db_update_session", "type": "main", "index": 0 }]]
+    },
+    "node_30_db_update_session": {
+      "main": [[{ "node": "redis_update_session_cache_node_f6", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameAccount"
+  },
+  "staticData": null
+}

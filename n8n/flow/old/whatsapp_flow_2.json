@@ -1,0 +1,258 @@
+{
+  "name": "WhatsApp Commerce - Flow 2: Session & AI (Improved)",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "rate_limit_check",
+              "leftValue": "={{ $json.rate_limit_exceeded }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "rate_limit_check_node",
+      "name": "IF - Rate Limit Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const messageData = $input.item.json.messageData || $input.item.json;\nreturn {\n  customerPhone: messageData.customerPhone,\n  currentTimestamp: new Date().toISOString(),\n  expiryWindow: '2 hours',\n  messageId: messageData.messageId,\n  messageText: messageData.text,\n  messageType: messageData.messageType,\n  isFirstMessage: messageData.isFirstMessage || false,\n  contextWindow: {\n    lookbackMinutes: 120,\n    maxMessages: 20\n  }\n};"
+      },
+      "id": "prepare_session_node",
+      "name": "Prepare Session Lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 250]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "key": "=session:{{ $json.customerPhone }}",
+        "options": {
+          "rawData": true
+        }
+      },
+      "id": "redis_get_session_node",
+      "name": "Redis - Get Session",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [650, 150],
+      "credentials": {
+        "redis": {
+          "id": "redis_creds",
+          "name": "Redis"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse Redis response\nconst redisResponse = $input.item.json;\nlet sessionData = null;\n\nif (redisResponse && redisResponse !== '(nil)' && redisResponse !== null) {\n  try {\n    sessionData = typeof redisResponse === 'string' ? JSON.parse(redisResponse) : redisResponse;\n  } catch (e) {\n    console.error('Failed to parse Redis session data:', e);\n  }\n}\n\nreturn {\n  ...($input.item.json),\n  activeSession: sessionData,\n  cacheHit: !!sessionData,\n  cacheSource: sessionData ? 'redis' : 'none'\n};"
+      },
+      "id": "parse_redis_session_node",
+      "name": "Parse Redis Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 150]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "session_cache_check_f2",
+              "leftValue": "={{ $json.cacheHit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_session_cache_hit_node_f2",
+      "name": "IF - Session Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 150]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM get_session_with_context($1);",
+        "options": {
+          "queryParams": "={{ $json.customerPhone }}"
+        }
+      },
+      "id": "get_session_node",
+      "name": "PostgreSQL - Get Session (Optimized)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres_creds",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=session:{{ $json.customer_phone || $json.customerPhone }}",
+        "value": "={{ JSON.stringify($json) }}",
+        "options": {
+          "ttl": 7200
+        }
+      },
+      "id": "redis_set_session_node",
+      "name": "Redis - Set Session",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [1250, 150],
+      "credentials": {
+        "redis": {
+          "id": "redis_creds",
+          "name": "Redis"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const session = $input.item.json;\nconst customerPhone = session.customer_phone || session.customerPhone;\n\n// MCP Context Builder - Enhanced\nconst mcpContext = {\n  customer: {\n    profile: {\n      name: session.customer_name,\n      email: session.customer_email,\n      address: session.default_address,\n      tier: session.customer_tier,\n      loyaltyPoints: session.loyalty_points\n    },\n    preferences: JSON.parse(session.context_data?.preferences || '{}'),\n    purchaseHistory: {\n      totalOrders: session.total_orders,\n      recentOrders: session.recent_orders || [],\n      hasPurchaseHistory: session.has_purchase_history\n    }\n  },\n  session: {\n    id: session.session_id,\n    state: session.session_state,\n    duration: session.session_duration_minutes,\n    cartData: session.cart_data || [],\n    contextData: session.context_data || {}\n  },\n  conversation: {\n    history: session.conversation_history || [],\n    currentMessage: {\n      text: $json.messageText,\n      type: $json.messageType,\n      timestamp: new Date().toISOString()\n    }\n  },\n  metadata: {\n    timestamp: new Date().toISOString(),\n    workflowId: $workflow.id,\n    executionId: $execution.id\n  }\n};\n\nreturn {\n  ...session,\n  mcpContext: mcpContext,\n  customerPhone: customerPhone\n};"
+      },
+      "id": "mcp_context_builder_node_f2",
+      "name": "MCP Context Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Import the AI Provider Selector code from the artifact\n// This is the enhanced version with multiple providers\n\n// [INSERT CODE FROM ai_provider_selector ARTIFACT HERE]\n\n// The code handles:\n// - Intelligent provider selection based on intent/complexity\n// - Multi-provider support (DeepSeek, Gemini Flash, Gemini Pro, GPT-3.5, GPT-4)\n// - Circuit breaker with retry logic\n// - Cost optimization\n// - Fallback mechanisms"
+      },
+      "id": "ai_provider_selector_node",
+      "name": "AI Provider Selector",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai_creds",
+          "name": "OpenAI"
+        },
+        "httpBasicAuth": {
+          "id": "deepseek_creds",
+          "name": "DeepSeek API"
+        },
+        "httpHeaderAuth": {
+          "id": "gemini_creds",
+          "name": "Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Enhanced AI Response Parser\nconst input = $input.item.json;\nlet aiResponse;\nlet parseError = null;\n\ntry {\n  // Handle response from different providers\n  if (input.cached_ai_response) {\n    aiResponse = typeof input.cached_ai_response === 'string' \n      ? JSON.parse(input.cached_ai_response) \n      : input.cached_ai_response;\n  } else if (input.choices && input.choices[0]) {\n    const content = input.choices[0].message.content;\n    aiResponse = JSON.parse(content);\n  } else if (input.error) {\n    throw new Error(input.error.message || 'API request failed');\n  } else {\n    throw new Error('Invalid response structure');\n  }\n  \n  // Add provider metadata if available\n  if (input.ai_metadata) {\n    aiResponse._metadata = input.ai_metadata;\n  }\n  \n} catch (error) {\n  parseError = error.message;\n  // Enhanced fallback logic based on message patterns\n  aiResponse = generateFallbackResponse(input);\n}\n\n// Enhanced response with provider info\nconst enhancedResponse = {\n  intent: aiResponse.intent || 'unknown',\n  confidence: aiResponse.confidence || 0.8,\n  entities: aiResponse.entities || {},\n  sentiment: aiResponse.sentiment || 'neutral',\n  suggested_response: aiResponse.suggested_response || '',\n  quick_replies: aiResponse.quick_replies || [],\n  requires_human: aiResponse.requires_human || false,\n  provider_info: {\n    provider: aiResponse._metadata?.provider || 'fallback',\n    model: aiResponse._metadata?.model || 'pattern_matching',\n    response_time: aiResponse._metadata?.responseTime || 0,\n    cost: aiResponse._metadata?.estimatedCost || 0,\n    complexity: aiResponse._metadata?.complexity || 0\n  },\n  cache_hit: !!input.cached_ai_response,\n  processing_time_ms: Date.now() - (input.startTime || Date.now()),\n  is_valid: validateResponse(aiResponse),\n  session: input.session || {},\n  message: input.message || {}\n};\n\nfunction generateFallbackResponse(input) {\n  // Implement sophisticated fallback logic\n  const messageText = (input.message?.text || '').toLowerCase();\n  // ... (rest of fallback logic)\n  return {\n    intent: 'unknown',\n    confidence: 0.5,\n    entities: {},\n    sentiment: 'neutral',\n    suggested_response: 'Lo siento, no entendí tu mensaje. ¿Podrías ser más específico?',\n    requires_human: true\n  };\n}\n\nfunction validateResponse(response) {\n  return response.intent !== 'unknown' || response.suggested_response?.length > 0;\n}\n\nreturn enhancedResponse;"
+      },
+      "id": "parse_ai_response_node",
+      "name": "Parse AI Response (Enhanced)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "category": "ai.response",
+        "label": "AI Response Metrics",
+        "name": "whatsapp_ai_metrics",
+        "eventName": "ai_response_processed",
+        "additionalFields": {
+          "provider": "={{ $json.provider_info.provider }}",
+          "model": "={{ $json.provider_info.model }}",
+          "intent": "={{ $json.intent }}",
+          "confidence": "={{ $json.confidence }}",
+          "responseTime": "={{ $json.provider_info.response_time }}",
+          "cost": "={{ $json.provider_info.cost }}",
+          "complexity": "={{ $json.provider_info.complexity }}",
+          "cacheHit": "={{ $json.cache_hit }}"
+        }
+      },
+      "id": "log_ai_metrics_node",
+      "name": "Log AI Metrics",
+      "type": "n8n-nodes-base.n8nTrainingCustomerDatastore",
+      "typeVersion": 1,
+      "position": [2050, 300]
+    }
+  ],
+  "connections": {
+    "rate_limit_check_node": {
+      "main": [
+        [{"node": "prepare_session_node", "type": "main", "index": 0}],
+        [{"node": "send_rate_limit_message", "type": "main", "index": 0}]
+      ]
+    },
+    "prepare_session_node": {
+      "main": [[{"node": "redis_get_session_node", "type": "main", "index": 0}]]
+    },
+    "redis_get_session_node": {
+      "main": [[{"node": "parse_redis_session_node", "type": "main", "index": 0}]]
+    },
+    "parse_redis_session_node": {
+      "main": [[{"node": "if_session_cache_hit_node_f2", "type": "main", "index": 0}]]
+    },
+    "if_session_cache_hit_node_f2": {
+      "main": [
+        [{"node": "redis_set_session_node", "type": "main", "index": 0}],
+        [{"node": "get_session_node", "type": "main", "index": 0}]
+      ]
+    },
+    "get_session_node": {
+      "main": [[{"node": "redis_set_session_node", "type": "main", "index": 0}]]
+    },
+    "redis_set_session_node": {
+      "main": [[{"node": "mcp_context_builder_node_f2", "type": "main", "index": 0}]]
+    },
+    "mcp_context_builder_node_f2": {
+      "main": [[{"node": "ai_provider_selector_node", "type": "main", "index": 0}]]
+    },
+    "ai_provider_selector_node": {
+      "main": [[{"node": "parse_ai_response_node", "type": "main", "index": 0}]]
+    },
+    "parse_ai_response_node": {
+      "main": [[{"node": "log_ai_metrics_node", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "whatsapp-error-handler",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  }
+}

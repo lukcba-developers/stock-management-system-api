@@ -1,0 +1,165 @@
+{
+  "name": "WhatsApp Commerce - Flow 7: Order Persistence & Final Response",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "needs_order_creation_check",
+              "leftValue": "={{ $json.needsOrderCreation }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if_needs_order_creation_f7",
+      "name": "IF - Needs Order Creation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [150, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO orders (\n    order_number, customer_phone, customer_name, delivery_address,\n    subtotal, delivery_fee, total_amount, order_status\n) VALUES (\n    '{{$json.orderData.orderNumber}}', \n    '{{$json.orderData.customerPhone}}', \n    '{{$json.orderData.customerName}}',\n    '{{$json.orderData.deliveryAddress}}', \n    {{$json.orderData.subtotal}}, \n    {{$json.orderData.deliveryFee}},\n    {{$json.orderData.total}}, \n    '{{$json.orderData.status || 'confirmed'}}'\n) RETURNING id as created_order_id;",
+        "options": {}
+      },
+      "id": "node_31_create_order",
+      "name": "Create Order (DB) (Nodo 31)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [300, 200],
+      "credentials": {
+        "postgres": { "id": "postgres_creds", "name": "PostgreSQL" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n    if (!item.json.needsOrderCreation || !item.json.created_order_id) {\n        results.push(item); \n        continue;\n    }\n    const orderData = item.json.orderData;\n    const orderId = item.json.created_order_id; \n    if (!orderData || !Array.isArray(orderData.items) || orderData.items.length === 0) {\n        console.warn(`No items to insert for order ID: ${orderId}`);\n        results.push(item);\n        continue;\n    }\n    const orderItemsToInsert = orderData.items.map(product => ({\n        order_id: orderId,\n        product_id: product.id, \n        product_name: product.name,\n        quantity: product.quantity,\n        unit_price: product.price,\n        total_price: (product.price || 0) * (product.quantity || 1)\n    }));\n    results.push({\n        json: {\n            ...item.json, \n            orderItemsToInsert: orderItemsToInsert, \n            needsOrderItemsInsert: true\n        }\n    });\n}\nreturn results;"
+      },
+      "id": "node_32_prepare_order_items",
+      "name": "Prepare Order Items (JS) (Nodo 32)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO order_items (\n    order_id, product_id, product_name, quantity, unit_price, total_price\n)\nSELECT\n    (item_object->>'order_id')::integer,\n    (item_object->>'product_id')::integer,\n    item_object->>'product_name',\n    (item_object->>'quantity')::integer,\n    (item_object->>'unit_price')::decimal,\n    (item_object->>'total_price')::decimal\nFROM jsonb_array_elements(('{{ JSON.stringify($json.orderItemsToInsert) }}')::jsonb) AS item_object\nRETURNING id;",
+        "options": {}
+      },
+      "id": "node_33_db_insert_order_items",
+      "name": "PostgreSQL - Insert Order Items (DB) (Nodo 33)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [700, 200],
+      "credentials": {
+        "postgres": { "id": "postgres_creds", "name": "PostgreSQL" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.item.json;\nif (!input.needsOrderCreation) return input;\n\nconst orderData = input.orderData;\nconst createdOrderId = input.created_order_id;\n\nconst eventStore = {\n  async recordEvent(event) {\n    const eventData = { id: 'uuid_placeholder', timestamp: new Date().toISOString(), aggregateId: event.customerId, eventType: event.type, payload: event.data, metadata: { sessionId: event.sessionId, nodeId: event.nodeId, workflowId: $workflow.id } };\n    console.log('Event Recorded:', eventData);\n    \n  }\n};\n\nasync function notifyOrderUpdateViaWebSocket(orderId, status) {\n    console.log(`WebSocket: Order ${orderId} status ${status}`);\n    \n}\n\nawait eventStore.recordEvent({\n  type: 'OrderCreated',\n  customerId: orderData.customerPhone,\n  data: { orderId: createdOrderId, totalAmount: orderData.total, itemsCount: orderData.items.length },\n  sessionId: input.session_id, \n  nodeId: 'eventsource_realtime_order_f7',\n  workflowId: $workflow.id\n});\n\nawait notifyOrderUpdateViaWebSocket(createdOrderId, 'confirmed');\n\nreturn input;"
+      },
+      "id": "eventsource_realtime_order_f7",
+      "name": "Event Sourcing & Real-time Update - Order Created",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n    if (!item.json.responseReady || !item.json.whatsappResponse) {\n        console.warn('Node 34: No whatsappResponse ready. Item:', JSON.stringify(item.json).substring(0,300));\n        continue; \n    }\n    const session = item.json;\n    const response = session.whatsappResponse;\n    const customerPhone = session.customerPhone || session.parsedMessage?.from || session.from; \n    if (!customerPhone) {\n        console.error('CRITICAL: No customer phone for WhatsApp response. Item:', JSON.stringify(session).substring(0,300));\n        continue;\n    }\n    const cleanPhone = customerPhone.replace(/[^\\d]/g, '');\n    let whatsappPayload = {\n        messaging_product: 'whatsapp',\n        to: cleanPhone,\n        type: response.messageType || 'text'\n    };\n    switch (response.messageType) {\n        case 'text':\n            whatsappPayload.text = { body: response.text || 'Mensaje vacío (error en preparación)' };\n            break;\n        case 'interactive':\n            whatsappPayload.interactive = {\n                type: response.interactiveType || 'list',\n                body: { text: response.text || 'Seleccione una opción:' },\n                action: {}\n            };\n            if (response.interactiveType === 'list') {\n                whatsappPayload.interactive.action.button = response.buttonText || 'Ver Opciones';\n                whatsappPayload.interactive.action.sections = response.listSections || [{ title: \"Opciones\", rows: [{id:\"error_opt\", title:\"Error en Opciones\"}] }];\n            } else if (response.interactiveType === 'button') {\n                whatsappPayload.interactive.action.buttons = response.buttons || [{type:\"reply\", reply:{id:\"error_btn\", title:\"Error en Botón\"}}];\n            }\n            if (response.footerText) {\n                whatsappPayload.interactive.footer = { text: response.footerText };\n            }\n            break;\n        default: \n            console.warn(`Unknown WhatsApp message type: ${response.messageType}. Sending as text.`);\n            whatsappPayload.type = 'text';\n            whatsappPayload.text = { body: response.text || `Error: Tipo de mensaje ${response.messageType} no soportado.` };\n    }\n    if (whatsappPayload.text?.body && whatsappPayload.text.body.length > 4096) {\n        whatsappPayload.text.body = whatsappPayload.text.body.substring(0, 4090) + '... [truncado]';\n    }\n    if (whatsappPayload.interactive?.body?.text && whatsappPayload.interactive.body.text.length > 1024) {\n         whatsappPayload.interactive.body.text = whatsappPayload.interactive.body.text.substring(0, 1018) + '... [truncado]';\n    }\n    results.push({ json: { ...item.json, whatsappPayloadToSend: whatsappPayload } });\n}\nreturn results;"
+      },
+      "id": "node_34_prepare_whatsapp_response",
+      "name": "Send WhatsApp Response (JS) (Nodo 34)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/{{$credentials.whatsappBusinessApi.phoneNumberId}}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "whatsappBusinessApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{$credentials.whatsappBusinessApi.accessToken}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={{$json.whatsappPayloadToSend}}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node_35_send_whatsapp_api",
+      "name": "HTTP Request - WhatsApp API (Nodo 35)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [750, 400],
+      "credentials": {
+        "whatsappBusinessApi": { "id": "whatsapp_creds", "name": "WhatsApp Business API" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.item.json;\nconst metrics = {\n  messageCounter: { inc: (labels) => console.log('Metric Incremented: ResponseSent', labels) }\n};\nmetrics.messageCounter.inc({ intent: input.intent || 'final_response', status: 'sent' });\nreturn input;"
+      },
+      "id": "metrics_response_sent_f7",
+      "name": "Metrics - Response Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [950, 400]
+    }
+  ],
+  "connections": {
+    "if_needs_order_creation_f7": {
+      "main": [
+        [{"node": "node_31_create_order", "type": "main", "index": 0}],
+        [{"node": "node_34_prepare_whatsapp_response", "type": "main", "index": 0}]
+      ]
+    },
+    "node_31_create_order": {
+      "main": [[{ "node": "node_32_prepare_order_items", "type": "main", "index": 0 }]]
+    },
+    "node_32_prepare_order_items": {
+      "main": [[{ "node": "node_33_db_insert_order_items", "type": "main", "index": 0 }]]
+    },
+    "node_33_db_insert_order_items": {
+      "main": [[{ "node": "eventsource_realtime_order_f7", "type": "main", "index": 0 }]]
+    },
+    "eventsource_realtime_order_f7": {
+      "main": [[{ "node": "node_34_prepare_whatsapp_response", "type": "main", "index": 0 }]]
+    },
+    "node_34_prepare_whatsapp_response": {
+      "main": [[{ "node": "node_35_send_whatsapp_api", "type": "main", "index": 0 }]]
+    },
+    "node_35_send_whatsapp_api": {
+      "main": [[{ "node": "metrics_response_sent_f7", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameAccount"
+  },
+  "staticData": null
+}

@@ -45,4 +45,8 @@ coverage/
 
 # Archivos de uploads
 backend/uploads/*
-!backend/uploads/.gitkeep 
+!backend/uploads/.gitkeep
+
+# Archivos de configuración de pruebas
+postgres
+redis

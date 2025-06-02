@@ -1,0 +1,349 @@
+{
+  "name": "WhatsApp Commerce - Flow 3: Intent Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "greeting",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "greeting"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "browse_category",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "browse"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "search_product",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "price_inquiry",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "search"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "add_to_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "modify_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "remove_from_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "cart"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "view_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "view_cart"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "checkout",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "checkout"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "track_order",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "track"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "support",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.requires_human }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "support"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "fixed",
+          "renameFallbackOutput": "unknown"
+        }
+      },
+      "id": "intent_router_node",
+      "name": "Switch - Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [250,500]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $input.item.json;\nconst session = data.session || {};\nconst isReturningCustomer = session.total_orders > 0;\nlet greetingMessage = '';\nlet quickReplies = [];\nif (isReturningCustomer) {\n  greetingMessage = `¡Hola ${session.customer_name}! 👋 Qué gusto verte de nuevo.\\n\\n`;\n  if (session.recent_orders && session.recent_orders.length > 0) {\n    greetingMessage += '🔄 *¿Quieres repetir tu último pedido?*\\n';\n    const lastOrder = session.recent_orders[0];\n    greetingMessage += `Pedido #${lastOrder.order_number} - $${lastOrder.total_amount}\\n\\n`;\n    quickReplies.push({\n      type: 'button',\n      text: '🔄 Repetir último pedido',\n      payload: 'repeat_last_order'\n    });\n  }\n  greetingMessage += '📱 *¿Qué deseas hacer hoy?*';\n} else {\n  greetingMessage = `¡Hola! 👋 Bienvenido a *Supermercado Digital*\\n\\n`;\n  greetingMessage += '🛒 Hacer tu compra es muy fácil:\\n';\n  greetingMessage += '1️⃣ Explora nuestras categorías\\n';\n  greetingMessage += '2️⃣ Busca productos específicos\\n';\n  greetingMessage += '3️⃣ Agrega al carrito\\n';\n  greetingMessage += '4️⃣ ¡Recibe en tu casa!\\n\\n';\n  greetingMessage += '📱 *¿Cómo te puedo ayudar?*';\n}\nquickReplies.push(\n  {\n    type: 'button',\n    text: '📂 Ver categorías',\n    payload: 'view_categories'\n  },\n  {\n    type: 'button',\n    text: '🔍 Buscar producto',\n    payload: 'search_product'\n  },\n  {\n    type: 'button',\n    text: '🏷️ Ver ofertas',\n    payload: 'view_offers'\n  }\n);\nif (isReturningCustomer) {\n  quickReplies.push({\n    type: 'button',\n    text: '⭐ Mis favoritos',\n    payload: 'view_favorites'\n  });\n}\nreturn {\n  response: {\n    text: greetingMessage,\n    quick_replies: quickReplies,\n    type: 'interactive'\n  },\n  sessionUpdate: {\n    state: 'Browse',\n    context: {\n      greeting_shown: true,\n      timestamp: new Date().toISOString()\n    }\n  },\n  analytics: {\n    event: 'greeting_shown',\n    customer_type: isReturningCustomer ? 'returning' : 'new',\n    customer_tier: session.customer_tier || 'new'\n  }\n};"
+      },
+      "id": "process_greeting_node",
+      "name": "Process Greeting",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450,200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.item.json;\nconst eventStore = {\n  async recordEvent(event) {\n    const eventData = { id: 'uuid_placeholder', timestamp: new Date().toISOString(), aggregateId: event.customerId, eventType: event.type, payload: event.data, metadata: { sessionId: event.sessionId, nodeId: event.nodeId, workflowId: $workflow.id } };\n    console.log('Event Recorded:', eventData);\n  }\n};\nawait eventStore.recordEvent({\n  type: 'GreetingSent',\n  customerId: input.session?.customer_phone,\n  data: { customer_type: input.analytics.customer_type },\n  sessionId: input.session?.session_id,\n  nodeId: 'eventsource_greeting_sent_f3',\n  workflowId: $workflow.id\n});\nreturn input;"
+      },
+      "id": "eventsource_greeting_sent_f3",
+      "name": "EventSourcing - GreetingSent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const categoryId = $input.item.json.categoryId || 'all'; \nconst cacheKey = `products:category:${categoryId}`;\nlet products = null;\ntry {\n  \n  console.log(`Attempting to get category products from Redis for key: ${cacheKey}`);\n  \n} catch (e) {\n  console.error('Redis get category products error:', e);\n}\nif (products) {\n  return { ...$input.item.json, categories: JSON.parse(products), categoryCacheHit: true };\n}\nreturn { ...$input.item.json, categoryCacheHit: false };"
+      },
+      "id": "redis_get_category_cache_node_f3",
+      "name": "Redis - Get Category Products",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "category_cache_check_f3",
+              "leftValue": "={{ $json.categoryCacheHit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if_category_cache_hit_node_f3",
+      "name": "IF - Category Cache Hit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n    c.id,\n    c.name,\n    c.description,\n    c.icon_emoji,\n    c.sort_order,\n    COUNT(DISTINCT p.id) as product_count,\n    COALESCE(\n        JSON_AGG(\n            DISTINCT jsonb_build_object(\n                'id', p.id,\n                'name', p.name,\n                'price', p.price,\n                'discount', p.discount_percentage\n            )\n        ) FILTER (WHERE p.is_featured = true AND p.is_available = true),\n        '[]'::json\n    ) as featured_products,\n    CASE \n        WHEN COUNT(p.id) FILTER (WHERE p.discount_percentage > 0) > 0 \n        THEN true \n        ELSE false \n    END as has_offers\nFROM categories c\nLEFT JOIN products p ON c.id = p.category_id AND p.is_available = true\nWHERE c.is_active = true\nGROUP BY c.id \nHAVING COUNT(DISTINCT p.id) > 0 \nORDER BY c.sort_order, c.name;",
+        "options": {}
+      },
+      "id": "get_categories_node",
+      "name": "Get Categories (DB)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [650,400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres_creds",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const categories = $input.item.json.items || $input.item.json; \nconst categoryId = $input.item.json.categoryId || 'all';\nconst cacheKey = `products:category:${categoryId}`;\ntry {\n  if (categories) {\n    \n    console.log(`Attempting to set category products in Redis for key: ${cacheKey}`);\n    \n  }\n} catch (e) {\n  console.error('Redis set category products error:', e);\n}\nreturn { ...$input.item.json, categories: categories };"
+      },
+      "id": "redis_set_category_cache_node_f3",
+      "name": "Redis - Set Category Products Cache",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    }
+  ],
+  "connections": {
+    "intent_router_node": {
+      "greeting": [
+        [{"node": "process_greeting_node", "type": "main", "index": 0}]
+      ],
+      "browse": [
+        [{"node": "redis_get_category_cache_node_f3", "type": "main", "index": 0}]
+      ]
+    },
+    "process_greeting_node": {
+      "main": [[{"node": "eventsource_greeting_sent_f3", "type": "main", "index": 0}]]
+    },
+    "redis_get_category_cache_node_f3": {
+      "main": [[{"node": "if_category_cache_hit_node_f3", "type": "main", "index": 0}]]
+    },
+    "if_category_cache_hit_node_f3": {
+      "main": [
+        [{"node": "redis_set_category_cache_node_f3", "type": "main", "index": 0}],
+        [{"node": "get_categories_node", "type": "main", "index": 0}]
+      ]
+    },
+    "get_categories_node": {
+      "main": [[{"node": "redis_set_category_cache_node_f3", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "whatsapp-error-handler",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  }
+}

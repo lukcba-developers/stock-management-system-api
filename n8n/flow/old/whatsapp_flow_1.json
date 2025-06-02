@@ -1,0 +1,182 @@
+{
+  "name": "WhatsApp Commerce - Flow 1: Entry & Validation",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger_node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook_node",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "webhookId": "whatsapp-commerce-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nif (!body.entry || !Array.isArray(body.entry) || body.entry.length === 0) {\n  return {\n    error: 'Invalid webhook structure',\n    valid: false\n  };\n}\nconst entry = body.entry[0];\nconst changes = entry.changes || [];\nconst change = changes[0] || {};\nconst value = change.value || {};\nconst messages = value.messages || [];\nconst message = messages[0] || {};\nconst contacts = value.contacts || [];\nconst contact = contacts[0] || {};\nconst parsedMessage = {\n  messageId: message.id || `msg_${Date.now()}`,\n  timestamp: message.timestamp || Math.floor(Date.now() / 1000),\n  customerPhone: message.from || 'unknown',\n  customerName: contact.profile?.name || contact.name || 'Cliente',\n  messageType: message.type || 'text',\n  text: '',\n  webhookId: body.entry[0]?.id || 'unknown',\n  businessPhone: value.metadata?.display_phone_number || 'unknown',\n  valid: false,\n  isFirstMessage: false,\n  context: {\n    replied_to: message.context?.id || null,\n    forwarded: message.context?.forwarded || false\n  }\n};\nswitch (message.type) {\n  case 'text':\n    parsedMessage.text = message.text?.body || '';\n    parsedMessage.valid = parsedMessage.text.length > 0;\n    break;\n  case 'button':\n    parsedMessage.text = message.button?.text || message.button?.payload || '';\n    parsedMessage.buttonPayload = message.button?.payload || null;\n    parsedMessage.valid = true;\n    break;\n  case 'interactive':\n    if (message.interactive?.type === 'list_reply') {\n      parsedMessage.text = message.interactive.list_reply?.title || '';\n      parsedMessage.listItemId = message.interactive.list_reply?.id || null;\n    } else if (message.interactive?.type === 'button_reply') {\n      parsedMessage.text = message.interactive.button_reply?.title || '';\n      parsedMessage.buttonId = message.interactive.button_reply?.id || null;\n    }\n    parsedMessage.valid = true;\n    break;\n  case 'image':\n  case 'document':\n  case 'audio':\n  case 'video':\n    parsedMessage.mediaUrl = message[message.type]?.link || null;\n    parsedMessage.mediaId = message[message.type]?.id || null;\n    parsedMessage.caption = message[message.type]?.caption || '';\n    parsedMessage.text = parsedMessage.caption || `[${message.type} recibido]`;\n    parsedMessage.valid = true;\n    break;\n  case 'location':\n    parsedMessage.location = {\n      latitude: message.location?.latitude || null,\n      longitude: message.location?.longitude || null,\n      name: message.location?.name || null,\n      address: message.location?.address || null\n    };\n    parsedMessage.text = `Ubicación: ${parsedMessage.location.name || parsedMessage.location.address || 'compartida'}`;\n    parsedMessage.valid = true;\n    break;\n  default:\n    parsedMessage.valid = false;\n}\nconst firstMessagePatterns = [\n  /^hola$/i,\n  /^hi$/i,\n  /^menu$/i,\n  /^inicio$/i,\n  /^comenzar$/i,\n  /^empezar$/i,\n  /^ayuda$/i,\n  /^help$/i\n];\nparsedMessage.isFirstMessage = firstMessagePatterns.some(pattern => \n  pattern.test(parsedMessage.text.trim())\n);\nparsedMessage.processedAt = new Date().toISOString();\nparsedMessage.messageHash = require('crypto')\n  .createHash('md5')\n  .update(`${parsedMessage.customerPhone}-${parsedMessage.messageId}-${parsedMessage.timestamp}`)\n  .digest('hex');\nreturn parsedMessage;"
+      },
+      "id": "parse_message_node",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const parsedMessage = $input.item.json;\nconst eventStore = {\n  async recordEvent(event) {\n    const eventData = {\n      id: 외부라이브러리.uuid.v4(), \n      timestamp: new Date().toISOString(),\n      aggregateId: event.customerId,\n      eventType: event.type,\n      payload: event.data,\n      metadata: {\n        sessionId: event.sessionId,\n        nodeId: event.nodeId,\n        workflowId: event.workflowId\n      }\n    };\n    \n    console.log('Event Recorded:', eventData);\n  }\n};\nconst metrics = {\n  messageCounter: {\n    inc: (labels) => console.log('Metric Incremented: whatsapp_messages_total', labels)\n  }\n};\nawait eventStore.recordEvent({\n  type: 'MessageReceived',\n  customerId: parsedMessage.customerPhone,\n  data: { messageId: parsedMessage.messageId, type: parsedMessage.messageType, text: parsedMessage.text },\n  sessionId: parsedMessage.webhookId, \n  nodeId: 'eventsource_metrics_message_received_node_f1',\n  workflowId: $workflow.id\n});\nmetrics.messageCounter.inc({ intent: 'unknown', status: 'received' });\nreturn $input.item.json;"
+      },
+      "id": "eventsource_metrics_message_received_node_f1",
+      "name": "EventSourcing & Metrics - Message Received",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 450]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "valid_check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "phone_check",
+              "leftValue": "={{ $json.customerPhone }}",
+              "rightValue": "unknown",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter_valid_node",
+      "name": "IF - Filter Valid Messages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "category": "message.received",
+        "label": "WhatsApp Message",
+        "name": "whatsapp_commerce",
+        "eventName": "message_received",
+        "additionalFields": {
+          "messageId": "={{ $json.messageId }}",
+          "customerPhone": "={{ $json.customerPhone }}",
+          "messageType": "={{ $json.messageType }}",
+          "text": "={{ $json.text }}",
+          "timestamp": "={{ $json.timestamp }}"
+        }
+      },
+      "id": "log_message_node",
+      "name": "Log Message",
+      "type": "n8n-nodes-base.n8nTrainingCustomerDatastore",
+      "typeVersion": 1,
+      "position": [1050, 250]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO message_logs (\n    customer_phone,\n    message_timestamp,\n    message_type,\n    rate_limit_exceeded,\n    ip_address,\n    user_agent,\n    message_content,\n    message_hash\n) VALUES (\n    $1,\n    TO_TIMESTAMP($2),\n    $3,\n    false,\n    $4::inet,\n    $5,\n    $6,\n    $7\n)\nON CONFLICT (message_hash) DO NOTHING\nRETURNING id;",
+        "options": {
+          "queryParams": "={{ $json.customerPhone }},{{ $json.timestamp }},{{ $json.messageType }},{{ $json.ip || '0.0.0.0' }},{{ $json.userAgent || 'WhatsApp' }},{{ $json.text }},{{ $json.messageHash }}"
+        }
+      },
+      "id": "insert_log_node",
+      "name": "PostgreSQL - Insert Message Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1250, 250],
+      "credentials": {
+        "postgres": {
+          "id": "postgres_creds",
+          "name": "PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH rate_limit_config AS (\n    SELECT \n        CASE \n            WHEN $2 = 'text' THEN 30\n            WHEN $2 = 'image' THEN 10\n            WHEN $2 = 'audio' THEN 5\n            ELSE 20\n        END as limit_threshold\n),\nmessage_counts AS (\n    SELECT \n        COUNT(*) as total_count,\n        COUNT(CASE WHEN message_type = $2 THEN 1 END) as type_count,\n        COUNT(CASE WHEN message_timestamp > NOW() - INTERVAL '1 minute' THEN 1 END) as minute_count\n    FROM message_logs\n    WHERE \n        customer_phone = $1\n        AND message_timestamp > NOW() - INTERVAL '1 hour'\n        AND rate_limit_exceeded = false\n)\nSELECT \n    mc.total_count,\n    mc.type_count,\n    mc.minute_count,\n    rlc.limit_threshold,\n    CASE \n        WHEN mc.minute_count >= 5 THEN true\n        WHEN mc.type_count >= rlc.limit_threshold THEN true\n        WHEN mc.total_count >= 50 THEN true\n        ELSE false\n    END as rate_limit_exceeded,\n    CASE \n        WHEN mc.minute_count >= 5 THEN 'burst_limit'\n        WHEN mc.type_count >= rlc.limit_threshold THEN 'type_limit'\n        WHEN mc.total_count >= 50 THEN 'total_limit'\n        ELSE 'ok'\n    END as limit_reason\nFROM message_counts mc, rate_limit_config rlc;",
+        "options": {
+          "queryParams": "={{ $json.customerPhone }},{{ $json.messageType }}"
+        }
+      },
+      "id": "check_rate_limit_node",
+      "name": "PostgreSQL - Check Rate Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1450, 250],
+      "credentials": {
+        "postgres": {
+          "id": "postgres_creds",
+          "name": "PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "manual_trigger_node": {
+      "main": [[{"node": "webhook_node", "type": "main", "index": 0}]]
+    },
+    "webhook_node": {
+      "main": [[{"node": "parse_message_node", "type": "main", "index": 0}]]
+    },
+    "parse_message_node": {
+      "main": [[{"node": "eventsource_metrics_message_received_node_f1", "type": "main", "index": 0}]]
+    },
+    "eventsource_metrics_message_received_node_f1": {
+      "main": [[{"node": "filter_valid_node", "type": "main", "index": 0}]]
+    },
+    "filter_valid_node": {
+      "main": [
+        [{"node": "log_message_node", "type": "main", "index": 0}],
+        [{"node": "webhook_response_invalid", "type": "main", "index": 0}]
+      ]
+    },
+    "log_message_node": {
+      "main": [[{"node": "insert_log_node", "type": "main", "index": 0}]]
+    },
+    "insert_log_node":  {
+      "main": [[{"node": "check_rate_limit_node", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "whatsapp-error-handler",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  }
+}

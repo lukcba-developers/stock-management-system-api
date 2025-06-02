@@ -1,0 +1,60 @@
+{
+  "name": "WhatsApp Commerce - Flow 5: Cart & Checkout Init",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 🛒 PROCESAR ACCIÓN DE CARRITO - ANÁLISIS AVANZADO (Nodo 24)\nconst items = $input.all();\nconst results = [];\n\nfunction extractCouponFromMessage(message) { /* ... (implementation from n8n_guide_part2_v2) ... */ }\n\nfor (const item of items) {\n    const session = item.json;\n    const intent = session.detectedIntent;\n    const entities = session.extractedEntities || {};\n    let currentCart = [];\n    try { currentCart = typeof session.cart_data === 'string' ? JSON.parse(session.cart_data) : (session.cart_data || []); } catch (e) { currentCart = []; }\n    \n    let cartAction = '';\n    let actionParams = {};\n    let needsConfirmation = false;\n    let errorMessage = null;\n    \n    switch (intent) {\n        case 'ADD_TO_CART': /* ... (logic from n8n_guide_part2_v2) ... */ cartAction = 'add_item'; break;\n        case 'VIEW_CART': cartAction = 'view_cart'; break;\n        case 'MODIFY_CART_QUANTITY': /* ... (logic from n8n_guide_part2_v2) ... */ cartAction = 'modify_quantity'; break;\n        case 'REMOVE_FROM_CART': /* ... (logic from n8n_guide_part2_v2) ... */ cartAction = 'remove_item'; break;\n        case 'CLEAR_CART': /* ... (logic from n8n_guide_part2_v2) ... */ cartAction = 'clear_cart'; break;\n        case 'APPLY_COUPON': /* ... (logic from n8n_guide_part2_v2) ... */ cartAction = 'apply_coupon'; break;\n        default: cartAction = 'unknown_action'; errorMessage = 'No entendí qué quieres hacer con el carrito';\n    }\n    \n    if (errorMessage) { /* ... (error handling from n8n_guide_part2_v2) ... */ results.push({json: {error: errorMessage}}); continue; }\n    if (needsConfirmation) { /* ... (confirmation logic from n8n_guide_part2_v2) ... */ results.push({json: {needsConfirmation: true}}); continue; }\n    \n    results.push({ json: { ...session, cartAction: cartAction, actionParams: actionParams, needsCartProcessing: true } });\n}\nreturn results;"
+      },
+      "id": "node_24_process_cart_action",
+      "name": "Process Cart Action (Nodo 24)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 👀 VER CARRITO - VERSIÓN AVANZADA (Nodo 25)\n// Adaptado de n8n_guide_part2_v1.md, Nodo 26B\nconst items = $input.all();\nconst results = [];\n\nfunction calculateDeliveryFee(subtotal, customerTier) { /* ... */ }\nfunction estimatePreparationTime(cartItems) { /* ... */ }\nfunction generateCartFooterText(totalItems, categoriesSet, hasOffers, deliveryFee) { /* ... */ }\n\nfor (const item of items) {\n    const session = item.json; // Assumes cart_data is populated correctly\n    let cartData = [];\n    if (session.actionParams && session.actionParams.currentCart) cartData = session.actionParams.currentCart;\n    else if (typeof session.cart_data === 'string') { try { cartData = JSON.parse(session.cart_data); } catch(e){ cartData = [];} }\n    else if (Array.isArray(session.cart_data)) cartData = session.cart_data;\n\n    if (cartData.length === 0) {\n        /* ... (empty cart logic from n8n_guide_part2_v1) ... */\n        const response = { messageType: 'text', text: 'Tu carrito está vacío.'};\n        results.push({ json: { ...session, responseReady: true, whatsappResponse: response }});\n        continue;\n    }\n    \n    /* ... (cart with items logic from n8n_guide_part2_v1, simplified for brevity) ... */\n    let cartMessage = 'Resumen del carrito:\\n';\n    let total = 0;\n    cartData.forEach(ci => { cartMessage += `${ci.name} x ${ci.quantity}\\n`; total += (ci.price * ci.quantity);});\n    cartMessage += `Total: ${total.toFixed(2)}`;\n\n    const response = { messageType: 'text', text: cartMessage }; // Simplified response\n    results.push({ json: { ...session, responseReady: true, whatsappResponse: response, sessionUpdate: { session_state: 'viewing_cart' } } });\n}\nreturn results;"
+      },
+      "id": "node_25_view_cart",
+      "name": "View Cart (Nodo 25)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 200]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 💳 PROCESAR CHECKOUT (Nodo 26)\n// Adaptado de n8n_guide_part2_v1.md, Nodo 27\nconst items = $input.all();\nconst results = [];\n\nfunction buildOrderSummary(cartData, subtotal, deliveryFee, discountAmount, finalTotal) { /* ... */ return `Resumen: Total ${finalTotal.toFixed(2)}`; }\nfunction extractAddress(entities, messageText, parsedMessage) { /* ... */ return messageText; }\nfunction validateAddress(address) { /* ... */ return address && address.length > 5; }\nfunction determineDeliveryZone(address) { /* ... */ return {isValid: true, estimatedTime: '30-60 min', fee: 100, name: 'Zona Ejemplo'}; }\nfunction calculateAdvancedDeliveryFee(subtotal, session) { /* ... */ return 100; }\nfunction calculateDiscounts(cartData, session) { /* ... */ return 0; }\nfunction generateOrderNumber() { /* ... */ return `ORD-${Date.now()}`; }\nfunction calculateEstimatedDelivery(deliveryInfo) { /* ... */ return new Date(Date.now() + 45 * 60000).toISOString(); }\n\nfor (const item of items) {\n    const session = item.json;\n    const intent = session.detectedIntent;\n    const entities = session.extractedEntities || {};\n    let cartData = []; try { cartData = typeof session.cart_data === 'string' ? JSON.parse(session.cart_data) : (session.cart_data || []); } catch (e) { cartData = []; }\n\n    if (cartData.length === 0 && intent !== 'CONFIRM_ORDER') { /* ... (empty cart logic) ... */ results.push({json: {error: 'Carrito vacío'}}); continue; }\n    \n    const subtotal = cartData.reduce((sum, cartItem) => sum + ((cartItem.price || 0) * (cartItem.quantity || 1)), 0);\n    const deliveryFee = calculateAdvancedDeliveryFee(subtotal, session);\n    const discountAmount = calculateDiscounts(cartData, session);\n    const finalTotal = subtotal + deliveryFee - discountAmount;\n    let response = {};\n\n    switch (intent) {\n        case 'CHECKOUT_START':\n            /* ... (logic from n8n_guide_part2_v1) ... */\n            response = { messageType: 'text', text: 'Por favor, envía tu dirección.' };\n            results.push({ json: { ...session, responseReady: true, whatsappResponse: response, sessionUpdate: { session_state: 'waiting_address' } } });\n            break;\n        case 'PROVIDE_ADDRESS':\n            const address = extractAddress(entities, session.originalMessageText, session.parsedMessage);\n            if (!address || !validateAddress(address)) { /* ... (invalid address logic) ... */ response = {messageType: 'text', text: 'Dirección inválida'}; }\n            else {\n                const deliveryZone = determineDeliveryZone(address);\n                if (!deliveryZone.isValid) { /* ... (invalid zone logic) ... */ response = {messageType: 'text', text: 'Fuera de zona'}; }\n                else { /* ... (confirmation logic from n8n_guide_part2_v1) ... */ response = {messageType: 'text', text: `Confirma pedido a ${address}? Total: ${finalTotal.toFixed(2)}`}; }\n            }\n            results.push({ json: { ...session, responseReady: true, whatsappResponse: response, sessionUpdate: { session_state: 'confirming_order', context_data: JSON.stringify({...JSON.parse(session.context_data || '{}'), deliveryAddress: address}) } } });\n            break;\n        case 'CONFIRM_ORDER':\n            const orderNumber = generateOrderNumber();\n            /* ... (order confirmation logic from n8n_guide_part2_v1) ... */\n            response = { messageType: 'text', text: `Pedido ${orderNumber} confirmado!` };\n            results.push({ json: { ...session, responseReady: true, whatsappResponse: response, needsOrderCreation: true, orderData: { orderNumber, items: cartData, total: finalTotal, deliveryAddress: JSON.parse(session.context_data || '{}').deliveryAddress }, sessionUpdate: { session_state: 'order_confirmed', cart_data: '[]' } } });\n            break;\n        default:\n            response = { messageType: 'text', text: 'Acción de checkout no reconocida.' };\n            results.push({ json: { ...session, responseReady: true, whatsappResponse: response } });\n    }\n}\nreturn results;"
+      },
+      "id": "node_26_process_checkout",
+      "name": "Process Checkout (Nodo 26)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    }
+  ],
+  "connections": {
+    "node_24_process_cart_action": {
+      "main": [
+        [
+          {
+            "node": "node_25_view_cart",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameAccount"
+  },
+  "staticData": null
+}
