@@ -6,8 +6,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copiar el código fuente
-COPY . .
+# Copiar el código fuente manteniendo la estructura de directorios
+COPY src/ ./src/
+COPY routes/ ./routes/
+COPY server.js .
+COPY .env .
 
 # Crear directorio para uploads
 RUN mkdir -p uploads/products

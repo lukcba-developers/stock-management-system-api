@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { Pool } from 'pg';
+import { pool } from './src/db/db.js';
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
@@ -11,8 +11,10 @@ import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import adminLoginRouter from './routes/adminLogin.js';
+import reportsRouter from './src/routes/reports.js';
 import { subDays, format } from 'date-fns';
 import fs from 'fs';
+import { setupStockNotifications } from './src/websocket/stockNotifications.js';
 
 // Configuración para ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -73,16 +75,6 @@ const PORT = process.env.PORT || 4000;
 
 // Configuración de Google OAuth
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
-// Configuración de PostgreSQL
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
-});
 
 // Configuración de multer para subida de imágenes
 const storage = multer.diskStorage({
@@ -169,48 +161,40 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'test_secret');
-    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Permitir ambos campos: id y userId
+    const userId = decoded.userId || decoded.id;
+
     // Si es el usuario de prueba (identificado por el prefijo O por el ID en el token)
-    // Es importante que el payload del token de prueba contenga userId
-    if (isTestUserToken && decoded.userId === TEST_USER.id) {
-      req.user = { ...TEST_USER, id: decoded.userId }; // Aseguramos que req.user.id sea consistente
+    if (isTestUserToken && userId === TEST_USER.id) {
+      req.user = { ...TEST_USER, id: userId };
       console.log('[Auth Middleware] Test user authenticated:', req.user.name);
       next();
       return;
-    } else if (decoded.userId === TEST_USER.id) { // Fallback por si el prefijo se pierde pero el ID es de test
-      req.user = { ...TEST_USER, id: decoded.userId };
+    } else if (userId === TEST_USER.id) {
+      req.user = { ...TEST_USER, id: userId };
       console.warn('[Auth Middleware] Test user authenticated by ID match (prefix might have been lost):', req.user.name);
       next();
       return;
     }
-    
 
     // Verificar si el usuario sigue activo o si su rol ha cambiado
     try {
-      const userQuery = await pool.query('SELECT id, email, role, is_active FROM admin_users WHERE id = $1', [decoded.userId]); // Usar decoded.userId
+      const userQuery = await pool.query('SELECT id, email, role, is_active FROM admin_users WHERE id = $1', [userId]);
       if (userQuery.rows.length === 0 || !userQuery.rows[0].is_active) {
-          console.log('[Auth Middleware] User not found or inactive:', decoded.userId);
+          console.log('[Auth Middleware] User not found or inactive:', userId);
           return res.status(403).json({ error: 'Usuario no válido o inactivo.' });
       }
-      req.user = userQuery.rows[0]; // Usar datos frescos de la BD
+      req.user = userQuery.rows[0];
       console.log('[Auth Middleware] Real user authenticated:', req.user.email);
     } catch (dbError) {
       // Si falla la conexión a BD, usar datos del token para pruebas
       console.warn('Database connection failed, using token data for testing:', dbError.message);
-      // Para usuarios reales, si la BD falla, no deberíamos confiar ciegamente en el token
-      // ya que el estado (is_active, role) podría haber cambiado.
-      // Considerar denegar el acceso o tener una política más estricta aquí.
-      // Por ahora, para mantener la lógica original en caso de fallo de BD con user real:
-      // Pero es importante asegurar que el token de un usuario real no se confunda con el de TEST_USER
-      if (decoded.email === TEST_USER.email && decoded.userId === TEST_USER.id) {
+      if ((decoded.email === TEST_USER.email) && (userId === TEST_USER.id)) {
          console.warn('[Auth Middleware] DB Error, but token matches TEST_USER structure. Treating as test user.');
-         req.user = { ...TEST_USER, id: decoded.userId };
+         req.user = { ...TEST_USER, id: userId };
       } else {
-        // Si no es el usuario de prueba y falla la BD, se podría considerar inválido.
-        // O usar los datos del token como fallback, pero con un warning.
-        console.warn('[Auth Middleware] DB Error. Using potentially stale token data for user:', decoded.email);
-        req.user = { id: decoded.userId, email: decoded.email, role: decoded.role, is_active: true }; // Asumir is_active true desde el token es un riesgo
+        req.user = { id: userId, email: decoded.email, role: decoded.role, is_active: true };
       }
     }
     next();
@@ -330,7 +314,7 @@ app.post('/api/auth/test-login', async (req, res) => {
         role: testUserData.role,
         picture: testUserData.picture
       },
-      process.env.JWT_SECRET || 'test_secret', // Usa la misma secret que tu middleware de autenticación general
+      process.env.JWT_SECRET, // Usar siempre process.env.JWT_SECRET sin fallback
       { expiresIn: '24h' } // Tiempo de expiración del token
     );
 
@@ -429,6 +413,7 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 });
 
 app.use('/api/auth', adminLoginRouter);
+app.use('/api/reports', reportsRouter);
 
 // ======================
 // RUTAS DE PRODUCTOS
@@ -800,6 +785,12 @@ const server = app.listen(PORT, () => {
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`Uploads path: ${path.resolve(process.env.UPLOAD_PATH || 'uploads')}`);
 });
+
+// Configurar WebSocket
+const { sendStockAlert } = setupStockNotifications(server);
+
+// Exportar sendStockAlert para uso en otros módulos
+export { sendStockAlert };
 
 // Graceful Shutdown
 process.on('SIGTERM', () => {

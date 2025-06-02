@@ -33,7 +33,7 @@ const Dashboard = () => {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/dashboard/stats', {
+      const response = await axios.get('/dashboard/stats', {
         params: {
           startDate: dateRange.start.toISOString(),
           endDate: dateRange.end.toISOString()

@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import pool from '../config/database.js';
 
 // Middleware de autenticación
-export const authenticateToken = async (req, res, next) => {
+export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -10,21 +10,13 @@ export const authenticateToken = async (req, res, next) => {
     return res.status(401).json({ error: 'Token no proporcionado' });
   }
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    // Verificar si el usuario sigue activo o si su rol ha cambiado
-    const userQuery = await pool.query('SELECT id, email, role, is_active FROM admin_users WHERE id = $1', [decoded.id]);
-    if (userQuery.rows.length === 0 || !userQuery.rows[0].is_active) {
-      return res.status(403).json({ error: 'Usuario no válido o inactivo.' });
+  jwt.verify(token, process.env.JWT_SECRET || 'your_super_secret_jwt_key_123', (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Token inválido' });
     }
-    req.user = userQuery.rows[0]; // Usar datos frescos de la BD
+    req.user = user;
     next();
-  } catch (error) {
-    if (error instanceof jwt.TokenExpiredError) {
-      return res.status(401).json({ error: 'Token expirado' });
-    }
-    return res.status(403).json({ error: 'Token inválido' });
-  }
+  });
 };
 
 // Middleware para verificar rol de admin

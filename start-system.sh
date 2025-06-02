@@ -8,9 +8,9 @@ export JWT_SECRET="test_jwt_secret"
 export GOOGLE_CLIENT_ID="test_client_id"
 export DB_HOST="localhost"
 export DB_PORT="5432"
-export DB_NAME="stock_management"
-export DB_USER="postgres"
-export DB_PASSWORD="postgres"
+export DB_NAME="supermarket_whatsapp"
+export DB_USER="n8n_user"
+export DB_PASSWORD="tu_password_db_seguro"
 export FRONTEND_URL="http://localhost:3001"
 
 # Función para matar procesos
