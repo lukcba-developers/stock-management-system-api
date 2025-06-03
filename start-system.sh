@@ -4,7 +4,7 @@ echo "🚀 Iniciando Sistema de Gestión de Stock..."
 echo ""
 
 # Configurar variables de entorno
-export JWT_SECRET="test_jwt_secret"
+export JWT_SECRET="test_secret"
 export GOOGLE_CLIENT_ID="test_client_id"
 export DB_HOST="localhost"
 export DB_PORT="5432"

@@ -32,7 +32,7 @@ services:
       - DB_USER=n8n_user
       - DB_PASSWORD=tu_password_db_seguro
       - DB_NAME=supermarket_whatsapp
-      - JWT_SECRET=your_jwt_secret
+      - JWT_SECRET=test_secret
       - GOOGLE_CLIENT_ID=your_google_client_id
     depends_on:
       - postgres

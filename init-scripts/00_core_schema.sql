@@ -130,7 +130,16 @@ END $$;
 
 -- 🔍 CONFIGURACIÓN DE BÚSQUEDA FULL-TEXT
 -- Configuración para español
-CREATE TEXT SEARCH CONFIGURATION IF NOT EXISTS spanish_unaccent (COPY = spanish);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_ts_config 
+        WHERE cfgname = 'spanish_unaccent' 
+        AND cfgnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'pg_catalog')
+    ) THEN
+        CREATE TEXT SEARCH CONFIGURATION spanish_unaccent (COPY = spanish);
+    END IF;
+END $$;
 
 -- ⚙️ CONFIGURACIÓN DEL SISTEMA
 CREATE TABLE IF NOT EXISTS shared.system_config (

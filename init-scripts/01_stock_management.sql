@@ -241,7 +241,7 @@ CREATE TABLE IF NOT EXISTS stock.product_suppliers (
 -- Trigger para updated_at en product_suppliers
 CREATE TRIGGER update_product_suppliers_updated_at
     BEFORE UPDATE ON stock.product_suppliers
-    FOR EACH ROW EXECUTE FUNCTION update_product_suppliers_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- 📋 ÓRDENES DE COMPRA
 CREATE TABLE IF NOT EXISTS stock.purchase_orders (
@@ -469,7 +469,7 @@ CREATE INDEX IF NOT EXISTS idx_products_price_range ON stock.products(price) WHE
 CREATE INDEX IF NOT EXISTS idx_products_brand ON stock.products(brand) WHERE brand IS NOT NULL;
 
 -- Índices para stock_movements
-CREATE INDEX IF NOT EXISTS idx_stock_movements_product_date ON stock.movements(product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_product_date ON stock.stock_movements(product_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_type_date ON stock.stock_movements(movement_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_reference ON stock.stock_movements(reference_type, reference_id) WHERE reference_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_stock_movements_user ON stock.stock_movements(user_id, created_at DESC) WHERE user_id IS NOT NULL;
@@ -504,7 +504,7 @@ CREATE OR REPLACE FUNCTION stock.update_product_stock(
     user_id_param INTEGER DEFAULT NULL,
     reference_type_param VARCHAR(50) DEFAULT 'manual_adjustment',
     reference_id_param INTEGER DEFAULT NULL
-) RETURNS BOOLEAN AS $
+) RETURNS BOOLEAN AS $func$
 DECLARE
     old_quantity INTEGER;
     movement_type_val movement_type_enum;
@@ -560,11 +560,11 @@ BEGIN
     
     RETURN TRUE;
 END;
-$ LANGUAGE plpgsql;
+$func$ LANGUAGE plpgsql;
 
 -- Función para verificar y crear alertas de stock
 CREATE OR REPLACE FUNCTION stock.check_stock_alerts(product_id_param INTEGER)
-RETURNS VOID AS $
+RETURNS VOID AS $func2$
 DECLARE
     product_record RECORD;
     alert_type_val VARCHAR(50);
@@ -659,7 +659,7 @@ BEGIN
         WHERE id = existing_alert_id;
     END IF;
 END;
-$ LANGUAGE plpgsql;
+$func2$ LANGUAGE plpgsql;
 
 -- Función para obtener productos con bajo stock
 CREATE OR REPLACE FUNCTION stock.get_low_stock_products(limit_param INTEGER DEFAULT 50)
@@ -670,7 +670,7 @@ RETURNS TABLE(
     min_stock INTEGER,
     category_name VARCHAR(100),
     urgency_level VARCHAR(20)
-) AS $
+) AS $func3$
 BEGIN
     RETURN QUERY
     SELECT 
@@ -698,7 +698,7 @@ BEGIN
         p.name
     LIMIT limit_param;
 END;
-$ LANGUAGE plpgsql;
+$func3$ LANGUAGE plpgsql;
 
 -- =============================================================================
 -- 📊 VISTAS MATERIALIZADAS PARA RENDIMIENTO
@@ -769,7 +769,7 @@ FROM stock.products;
 
 -- Función para refrescar vistas materializadas
 CREATE OR REPLACE FUNCTION stock.refresh_materialized_views()
-RETURNS VOID AS $
+RETURNS VOID AS $func4$
 BEGIN
     REFRESH MATERIALIZED VIEW CONCURRENTLY stock.products_with_details;
     
@@ -780,14 +780,14 @@ BEGIN
         'refresh_materialized_views', 'system', 'stock.products_with_details', 'system'
     );
 END;
-$ LANGUAGE plpgsql;
+$func4$ LANGUAGE plpgsql;
 
 -- ✅ VERIFICACIÓN DE INSTALACIÓN
-DO $
+DO $$
 BEGIN
     RAISE NOTICE '✅ Stock Management Schema instalado correctamente';
     RAISE NOTICE '📦 Tablas principales: products, categories, suppliers, movements';
     RAISE NOTICE '🔍 Vistas materializadas y funciones optimizadas creadas';
     RAISE NOTICE '📊 Índices de rendimiento aplicados';
     RAISE NOTICE '🚨 Sistema de alertas configurado';
-END $;
+END $$;

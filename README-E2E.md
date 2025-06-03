@@ -16,7 +16,7 @@ El sistema está completamente funcional para pruebas End-to-End con datos mock.
 **Terminal 1 - Backend:**
 ```bash
 cd backend
-export JWT_SECRET="test_jwt_secret"
+export JWT_SECRET="test_secret"
 export FRONTEND_URL="http://localhost:3001"
 node server.js
 ```

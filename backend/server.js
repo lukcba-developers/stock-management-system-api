@@ -164,7 +164,7 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     // Permitir ambos campos: id y userId
     const userId = decoded.userId || decoded.id;
-
+    
     // Si es el usuario de prueba (identificado por el prefijo O por el ID en el token)
     if (isTestUserToken && userId === TEST_USER.id) {
       req.user = { ...TEST_USER, id: userId };

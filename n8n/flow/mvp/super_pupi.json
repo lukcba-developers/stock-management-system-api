@@ -1,0 +1,639 @@
+{
+  "name": "super_pupi",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook-mvp",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "323b76b4-6a72-45e6-9d08-7530e48de0e9",
+      "name": "WhatsApp Webhook Entry",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -1440,
+        200
+      ],
+      "webhookId": "whatsapp-mvp-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 🚀 MVP PARSER - Versión simplificada del parse_message_optimized\nconst body = $input.item.json.body || $input.item.json;\n\nif (!body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {\n  return {\n    error: 'Invalid webhook structure',\n    valid: false,\n    skipProcessing: true\n  };\n}\n\nconst message = body.entry[0].changes[0].value.messages[0];\nconst contact = body.entry[0].changes[0].value.contacts?.[0];\n\n// MVP: Solo soportamos text e interactive\nif (!['text', 'interactive'].includes(message.type)) {\n  return { \n    valid: false, \n    skipProcessing: true,\n    reason: 'unsupported_type' \n  };\n}\n\nconst parsed = {\n  messageId: message.id,\n  timestamp: parseInt(message.timestamp),\n  customerPhone: message.from,\n  customerName: contact?.profile?.name || 'Cliente',\n  messageType: message.type,\n  text: '',\n  valid: false\n};\n\n// Parseo simple\nif (message.type === 'text') {\n  parsed.text = message.text?.body || '';\n  parsed.valid = parsed.text.length > 0;\n} else if (message.type === 'interactive') {\n  if (message.interactive?.type === 'list_reply') {\n    parsed.text = message.interactive.list_reply.id;\n    parsed.interactionType = 'list';\n  } else if (message.interactive?.type === 'button_reply') {\n    parsed.text = message.interactive.button_reply.id;\n    parsed.interactionType = 'button';\n  }\n  parsed.valid = true;\n}\n\nreturn parsed;"
+      },
+      "id": "59e5f7df-38cd-43cc-b2c4-853272687458",
+      "name": "Parse Message MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1240,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "valid_check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "793ab34c-4db2-4914-8e87-f52e41f05832",
+      "name": "IF Valid Message",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- MVP: Sesión simple sin Redis\nSELECT \n  id,\n  customer_phone,\n  session_state,\n  cart_data,\n  context_data,\n  expires_at\nFROM customer_sessions\nWHERE customer_phone = $1\n  AND expires_at > NOW()\nORDER BY updated_at DESC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "95ee4346-ee62-47c3-bc27-db4c2f57a6eb",
+      "name": "Get Session MVP",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 🚀 MVP INTENT DETECTION - Sin AI, basado en palabras clave\nconst text = $json.text || '';\nconst sessionData = $json.session || {};\nconst lowerText = text.toLowerCase().trim();\n\n// Detección simple de intenciones\nlet intent = 'unknown';\nlet confidence = 0.5;\nlet entities = {};\n\n// Patrones básicos\nif (/^(hola|hi|buenos|buenas|menu|inicio|start)/.test(lowerText)) {\n  intent = 'greeting';\n  confidence = 0.9;\n} else if (/^(categorias|categoria|ver categorias|1)$/.test(lowerText)) {\n  intent = 'browse_category';\n  confidence = 0.9;\n} else if (/^(buscar|busco|quiero|necesito|2)/.test(lowerText)) {\n  intent = 'search_product';\n  confidence = 0.8;\n  // Extraer producto si viene en el mismo mensaje\n  const productMatch = lowerText.match(/(?:buscar|busco|quiero|necesito)\\s+(.+)/);\n  if (productMatch) {\n    entities.productName = productMatch[1];\n  }\n} else if (/^(carrito|ver carrito|mi carrito|3)$/.test(lowerText)) {\n  intent = 'view_cart';\n  confidence = 0.9;\n} else if (/^(ayuda|help|soporte|4)$/.test(lowerText)) {\n  intent = 'support';\n  confidence = 0.9;\n} else if (/^category_\\d+$/.test(text)) {\n  intent = 'select_category';\n  entities.categoryId = text.replace('category_', '');\n  confidence = 0.95;\n} else if (/^product_\\d+$/.test(text)) {\n  intent = 'select_product';\n  entities.productId = text.replace('product_', '');\n  confidence = 0.95;\n} else if (/^add_\\d+$/.test(text)) {\n  intent = 'add_to_cart';\n  entities.productId = text.replace('add_', '');\n  entities.quantity = 1;\n  confidence = 0.95;\n} else if (/^checkout$/.test(lowerText)) {\n  intent = 'checkout';\n  confidence = 0.9;\n}\n\n// Respuesta rápida según intent\nlet quickReplies = [];\nlet suggestedResponse = '';\n\nswitch(intent) {\n  case 'greeting':\n    suggestedResponse = '¡Hola! 👋 Bienvenido a nuestro catálogo digital.\\n\\n¿Qué deseas hacer hoy?';\n    quickReplies = [\n      { id: '1', title: '📂 Ver Categorías' },\n      { id: '2', title: '🔍 Buscar Producto' },\n      { id: '3', title: '🛒 Mi Carrito' }\n    ];\n    break;\n  case 'browse_category':\n    suggestedResponse = '📂 Selecciona una categoría:';\n    break;\n  case 'search_product':\n    if (entities.productName) {\n      suggestedResponse = `🔍 Buscando \"${entities.productName}\"...`;\n    } else {\n      suggestedResponse = '🔍 ¿Qué producto estás buscando?';\n    }\n    break;\n  case 'view_cart':\n    suggestedResponse = '🛒 Consultando tu carrito...';\n    break;\n  default:\n    suggestedResponse = '❓ No entendí tu mensaje. Por favor selecciona una opción:';\n    quickReplies = [\n      { id: '1', title: '📂 Ver Categorías' },\n      { id: '2', title: '🔍 Buscar Producto' },\n      { id: '3', title: '🛒 Mi Carrito' }\n    ];\n}\n\nreturn {\n  ...($json || {}),\n  aiResponse: {\n    intent,\n    confidence,\n    entities,\n    suggested_response: suggestedResponse,\n    quick_replies: quickReplies\n  },\n  mvpDetected: true\n};"
+      },
+      "id": "2970d702-a039-498e-93a2-765bd51d7e96",
+      "name": "Intent Detection MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.aiResponse.intent }}",
+                    "rightValue": "greeting",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "090c2db4-5b6a-4e8c-8d39-761f5d1fa435"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "greeting"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.aiResponse.intent }}",
+                    "rightValue": "browse_category",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "7f50b2e1-1f4d-4a55-98a2-2ef10600e25b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "browse_category"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.aiResponse.intent }}",
+                    "rightValue": "search_product",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "b52cd85e-4f4e-451f-b92c-fcbb64210dcd"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "search_product"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.aiResponse.intent }}",
+                    "rightValue": "view_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "4529ac0f-966a-42f1-990e-7e5163372da2"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "view_cart"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.aiResponse.intent }}",
+                    "rightValue": "add_to_cart",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "f07c0c24-2f12-4d64-a77c-80499e23e690"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "add_to_cart"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "fixed"
+        }
+      },
+      "id": "7cc17ad3-9663-43c8-a626-6bd92a909999",
+      "name": "Intent Router MVP",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -500,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// GREETING HANDLER MVP\nconst data = $json;\n\nconst greetingMessage = `¡Hola! 👋 Bienvenido a *Supermercado Digital*\n\n🛒 Tu tienda online de confianza\n\n¿Qué deseas hacer hoy?`;\n\nconst response = {\n  messageType: 'interactive',\n  interactiveType: 'button',\n  text: greetingMessage,\n  buttons: [\n    { type: 'reply', reply: { id: '1', title: '📂 Ver Categorías' } },\n    { type: 'reply', reply: { id: '2', title: '🔍 Buscar Producto' } },\n    { type: 'reply', reply: { id: '3', title: '🛒 Mi Carrito' } }\n  ],\n  footerText: 'Selecciona una opción'\n};\n\nreturn {\n  ...data,\n  responseReady: true,\n  whatsappResponse: response\n};"
+      },
+      "id": "cc09fcae-67e5-442c-bdc5-cb2b5c2df2c7",
+      "name": "Greeting Handler MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- MVP: Categorías simples\nSELECT \n  id, \n  name, \n  icon_emoji,\n  (SELECT COUNT(*) FROM products WHERE category_id = c.id AND is_available = true) as product_count\nFROM categories c\nWHERE is_active = true\nORDER BY sort_order, name\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "dcaa820d-d388-4a25-8d41-fda0da9302b1",
+      "name": "Get Categories MVP",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -220,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// FORMAT CATEGORIES MVP\nconst data = $json;\nconst categories = data.categories || [];\n\nif (categories.length === 0) {\n  return {\n    ...data,\n    responseReady: true,\n    whatsappResponse: {\n      messageType: 'text',\n      text: '😔 No hay categorías disponibles en este momento.'\n    }\n  };\n}\n\nconst mainMessage = `📂 *Nuestras Categorías*\\n\\nSelecciona una categoría:`;\n\nconst categoryRows = categories.map(cat => ({\n  id: `category_${cat.id}`,\n  title: `${cat.icon_emoji || '📁'} ${cat.name}`,\n  description: `${cat.product_count || 0} productos`\n}));\n\nconst response = {\n  messageType: 'interactive',\n  interactiveType: 'list',\n  text: mainMessage,\n  buttonText: 'Ver Categorías',\n  listSections: [{\n    title: 'Categorías Disponibles',\n    rows: categoryRows\n  }],\n  footerText: 'Selecciona para ver productos'\n};\n\nreturn {\n  ...data,\n  responseReady: true,\n  whatsappResponse: response\n};"
+      },
+      "id": "822f0488-6fd0-4991-ab6f-ffe098915cea",
+      "name": "Format Categories MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- MVP: Búsqueda simple de productos\nSELECT \n  p.id, \n  p.name, \n  p.price, \n  p.stock_quantity,\n  c.name as category_name\nFROM products p\nLEFT JOIN categories c ON p.category_id = c.id\nWHERE p.is_available = true\n  AND p.stock_quantity > 0\n  AND (\n    $1 = '' OR \n    p.name ILIKE '%' || $1 || '%' OR \n    p.brand ILIKE '%' || $1 || '%'\n  )\nORDER BY p.popularity_score DESC, p.name\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "4efd39ee-157b-4ae5-bd9c-a9e3e140775b",
+      "name": "Search Products MVP",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// FORMAT PRODUCTS MVP\nconst data = $json;\nconst products = data.products || [];\nconst searchTerm = data.aiResponse?.entities?.productName || '';\n\nif (products.length === 0) {\n  return {\n    ...data,\n    responseReady: true,\n    whatsappResponse: {\n      messageType: 'text',\n      text: `😔 No encontré productos${searchTerm ? ` para \"${searchTerm}\"` : ''}.\\n\\nPuedes buscar otro producto o ver nuestras categorías.`,\n      quickReplies: [\n        { id: '1', title: '📂 Ver Categorías' },\n        { id: '2', title: '🔍 Buscar Otro' }\n      ]\n    }\n  };\n}\n\nconst resultMessage = searchTerm \n  ? `🔍 *Resultados para \"${searchTerm}\"*`\n  : `📦 *Productos Disponibles*`;\n\nconst productRows = products.map(product => ({\n  id: `product_${product.id}`,\n  title: product.name,\n  description: `$${product.price.toFixed(2)} - Stock: ${product.stock_quantity}`\n}));\n\nconst response = {\n  messageType: 'interactive',\n  interactiveType: 'list',\n  text: resultMessage,\n  buttonText: 'Ver Productos',\n  listSections: [{\n    title: 'Selecciona un producto',\n    rows: productRows\n  }],\n  footerText: 'Toca para ver detalles'\n};\n\nreturn {\n  ...data,\n  responseReady: true,\n  whatsappResponse: response\n};"
+      },
+      "id": "1a6147ca-34d1-41b5-960a-32fb26e3b931",
+      "name": "Format Products MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// VIEW CART MVP\nconst data = $json;\nconst session = data.session || {};\nlet cart = [];\n\ntry {\n  cart = typeof session.cart_data === 'string' \n    ? JSON.parse(session.cart_data) \n    : (session.cart_data || []);\n} catch (e) {\n  cart = [];\n}\n\nif (cart.length === 0) {\n  return {\n    ...data,\n    responseReady: true,\n    whatsappResponse: {\n      messageType: 'text',\n      text: '🛒 Tu carrito está vacío.\\n\\n¿Qué deseas hacer?',\n      quickReplies: [\n        { id: '1', title: '📂 Ver Categorías' },\n        { id: '2', title: '🔍 Buscar Producto' }\n      ]\n    }\n  };\n}\n\nlet total = 0;\nlet cartMessage = '🛒 *Tu Carrito*\\n\\n';\n\ncart.forEach((item, index) => {\n  const itemTotal = item.price * item.quantity;\n  total += itemTotal;\n  cartMessage += `${index + 1}. ${item.name}\\n`;\n  cartMessage += `   Cantidad: ${item.quantity} x $${item.price.toFixed(2)}\\n`;\n  cartMessage += `   Subtotal: $${itemTotal.toFixed(2)}\\n\\n`;\n});\n\ncartMessage += `💰 *Total: $${total.toFixed(2)}*`;\n\nconst response = {\n  messageType: 'interactive',\n  interactiveType: 'button',\n  text: cartMessage,\n  buttons: [\n    { type: 'reply', reply: { id: 'checkout', title: '💳 Finalizar Compra' } },\n    { type: 'reply', reply: { id: '1', title: '📂 Seguir Comprando' } },\n    { type: 'reply', reply: { id: 'clear_cart', title: '🗑️ Vaciar Carrito' } }\n  ],\n  footerText: 'Selecciona una opción'\n};\n\nreturn {\n  ...data,\n  responseReady: true,\n  whatsappResponse: response\n};"
+      },
+      "id": "b6bce0f2-482d-42df-b13c-0ec33181b989",
+      "name": "View Cart MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ADD TO CART MVP\nconst data = $json;\nconst productId = data.aiResponse?.entities?.productId;\nconst session = data.session || {};\n\nif (!productId) {\n  return {\n    ...data,\n    responseReady: true,\n    whatsappResponse: {\n      messageType: 'text',\n      text: '❌ No se pudo identificar el producto. Por favor intenta de nuevo.'\n    }\n  };\n}\n\n// Simulación - En producción, consultar la BD\nconst productInfo = {\n  id: productId,\n  name: 'Producto Ejemplo',\n  price: 100,\n  quantity: 1\n};\n\nlet cart = [];\ntry {\n  cart = typeof session.cart_data === 'string' \n    ? JSON.parse(session.cart_data) \n    : (session.cart_data || []);\n} catch (e) {\n  cart = [];\n}\n\n// Agregar o actualizar producto\nconst existingIndex = cart.findIndex(item => item.id === productInfo.id);\nif (existingIndex >= 0) {\n  cart[existingIndex].quantity += 1;\n} else {\n  cart.push(productInfo);\n}\n\nconst response = {\n  messageType: 'text',\n  text: `✅ *${productInfo.name}* agregado al carrito\\n\\n🛒 Tienes ${cart.length} productos en tu carrito`,\n  quickReplies: [\n    { id: '3', title: '🛒 Ver Carrito' },\n    { id: '1', title: '📂 Seguir Comprando' },\n    { id: 'checkout', title: '💳 Finalizar' }\n  ]\n};\n\n// Actualizar sesión\nconst updatedSession = {\n  ...session,\n  cart_data: JSON.stringify(cart)\n};\n\nreturn {\n  ...data,\n  responseReady: true,\n  whatsappResponse: response,\n  sessionToUpdate: updatedSession\n};"
+      },
+      "id": "a7afd91c-0e4d-4507-b83e-ec006d579e86",
+      "name": "Add to Cart MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- MVP: Actualizar sesión\nINSERT INTO customer_sessions (\n  customer_phone,\n  session_state,\n  cart_data,\n  context_data,\n  expires_at\n) VALUES (\n  $1, $2, $3::jsonb, $4::jsonb, NOW() + INTERVAL '2 hours'\n)\nON CONFLICT (customer_phone) \nDO UPDATE SET \n  session_state = EXCLUDED.session_state,\n  cart_data = EXCLUDED.cart_data,\n  context_data = EXCLUDED.context_data,\n  expires_at = EXCLUDED.expires_at,\n  updated_at = NOW()\nRETURNING id;",
+        "options": {}
+      },
+      "id": "8841d6eb-d4ec-4ced-bf09-9ab61ca64b8c",
+      "name": "Update Session MVP",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// FORMAT WHATSAPP RESPONSE MVP\nconst data = $json;\nconst whatsappResponse = data.whatsappResponse;\nconst customerPhone = data.customerPhone;\n\nif (!whatsappResponse || !customerPhone) {\n  return { ...data, skipWhatsAppSend: true };\n}\n\nconst cleanPhone = customerPhone.replace(/[^\\d]/g, '');\n\nlet whatsappPayload = {\n  messaging_product: 'whatsapp',\n  to: cleanPhone,\n  type: whatsappResponse.messageType || 'text'\n};\n\nswitch (whatsappResponse.messageType) {\n  case 'text':\n    whatsappPayload.text = { \n      body: whatsappResponse.text.substring(0, 4096) \n    };\n    \n    // Agregar quick replies si existen\n    if (whatsappResponse.quickReplies && whatsappResponse.quickReplies.length > 0) {\n      whatsappPayload.type = 'interactive';\n      whatsappPayload.interactive = {\n        type: 'button',\n        body: { text: whatsappResponse.text },\n        action: {\n          buttons: whatsappResponse.quickReplies.slice(0, 3).map(reply => ({\n            type: 'reply',\n            reply: { id: reply.id, title: reply.title }\n          }))\n        }\n      };\n    }\n    break;\n    \n  case 'interactive':\n    whatsappPayload.interactive = {\n      type: whatsappResponse.interactiveType || 'button',\n      body: { text: whatsappResponse.text }\n    };\n    \n    if (whatsappResponse.interactiveType === 'list') {\n      whatsappPayload.interactive.action = {\n        button: whatsappResponse.buttonText || 'Opciones',\n        sections: whatsappResponse.listSections || []\n      };\n    } else {\n      whatsappPayload.interactive.action = {\n        buttons: whatsappResponse.buttons || []\n      };\n    }\n    \n    if (whatsappResponse.footerText) {\n      whatsappPayload.interactive.footer = { \n        text: whatsappResponse.footerText \n      };\n    }\n    break;\n}\n\nreturn {\n  ...data,\n  whatsappPayloadToSend: whatsappPayload,\n  readyToSend: true\n};"
+      },
+      "id": "374bb1b4-1df9-480f-be98-e288ae20b8da",
+      "name": "Format WhatsApp MVP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/{{$credentials.whatsappBusinessApi.phoneNumberId}}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "whatsappBusinessApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$credentials.whatsappBusinessApi.accessToken}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "a8457a27-1458-4063-8524-9446dcb86c3f",
+      "name": "Send WhatsApp MVP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        640,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "110e02a2-b4f6-42dd-8dc2-cb0c07813d3b",
+      "name": "Webhook Response MVP",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "484c9d65-72a6-40ad-8008-3779ba422263",
+      "name": "Webhook Response Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -880,
+        380
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Intent Detection MVP": {
+      "main": [
+        [
+          {
+            "node": "Intent Router MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Message MVP": {
+      "main": [
+        [
+          {
+            "node": "IF Valid Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Valid Message": {
+      "main": [
+        [
+          {
+            "node": "Get Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webhook Response Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Session MVP": {
+      "main": [
+        [
+          {
+            "node": "Intent Detection MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Router MVP": {
+      "main": [
+        [
+          {
+            "node": "Greeting Handler MVP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Categories MVP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Search Products MVP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "View Cart MVP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add to Cart MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Categories MVP": {
+      "main": [
+        [
+          {
+            "node": "Format Categories MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Products MVP": {
+      "main": [
+        [
+          {
+            "node": "Format Products MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Products MVP": {
+      "main": [
+        [
+          {
+            "node": "Update Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Categories MVP": {
+      "main": [
+        [
+          {
+            "node": "Update Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Greeting Handler MVP": {
+      "main": [
+        [
+          {
+            "node": "Update Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "View Cart MVP": {
+      "main": [
+        [
+          {
+            "node": "Update Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Cart MVP": {
+      "main": [
+        [
+          {
+            "node": "Update Session MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Session MVP": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp MVP": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp MVP": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response MVP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f063ba0f-114a-41f5-82c1-37642fcbc9c2",
+  "meta": {
+    "instanceId": "d85cf69e44dc85a0200a0bf41e82e86c427441c8d9cffcf7bf715da374d2cf07"
+  },
+  "id": "RYACDwOO9aksP70K",
+  "tags": []
+}
