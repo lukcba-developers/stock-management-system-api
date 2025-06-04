@@ -591,6 +591,32 @@ stock-management-system/
 5. Crear Pull Request con descripción detallada
 
 ---
+🔐 Sistema de Control de Acceso y Autorización
+Flujo Completo:
+
+Admin crea organización → Se genera la empresa en el sistema
+Admin invita usuarios → Envía emails con tokens de invitación
+Usuario acepta invitación → Hace login con Google
+Sistema valida → Verifica que el email esté autorizado
+Acceso otorgado → Usuario accede con su rol específico
+
+Características Clave:
+
+✅ Control total sobre quién puede acceder
+✅ Multi-tenant real con aislamiento de datos
+✅ Roles y permisos granulares
+✅ Límites por plan de suscripción
+✅ Dashboard de administración completo
+✅ Onboarding automatizado
+✅ Facturación integrada
+
+Seguridad:
+
+Solo emails autorizados pueden hacer login
+Tokens de invitación con expiración
+Aislamiento completo entre organizaciones
+Auditoría de todos los cambios
+---
 
 ## 📞 Soporte y Contacto
 

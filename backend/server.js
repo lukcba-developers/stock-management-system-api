@@ -12,9 +12,20 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import adminLoginRouter from './routes/adminLogin.js';
 import reportsRouter from './src/routes/reports.js';
+import authRouter from './src/routes/auth.js';
+import adminRouter from './src/routes/admin.js';
+import organizationRouter from './src/routes/organization.js';
 import { subDays, format } from 'date-fns';
 import fs from 'fs';
 import { setupStockNotifications } from './src/websocket/stockNotifications.js';
+// Importar middleware de multi-tenancy
+import { 
+  injectOrganizationContext, 
+  enforceProductOrganization, 
+  enforceOrderOrganization,
+  logActivityWithOrganization,
+  checkOrganizationLimits
+} from './src/middleware/multitenancy.js';
 
 // Configuración para ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -414,11 +425,22 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 
 app.use('/api/auth', adminLoginRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/admin', adminRouter);
+app.use('/api/organization', organizationRouter);
+
+// Aplicar middleware de multi-tenancy a rutas que requieren aislamiento por organización
+// Nota: Las rutas de auth no necesitan este middleware ya que manejan su propio contexto
+app.use('/api/products', authenticateToken, injectOrganizationContext, enforceProductOrganization);
+app.use('/api/categories', authenticateToken, injectOrganizationContext);
+app.use('/api/orders', authenticateToken, injectOrganizationContext, enforceOrderOrganization);
+app.use('/api/dashboard', authenticateToken, injectOrganizationContext);
+app.use('/api/inventory', authenticateToken, injectOrganizationContext);
 
 // ======================
 // RUTAS DE PRODUCTOS
 // ======================
-app.get('/api/products', authenticateToken, async (req, res) => {
+app.get('/api/products', async (req, res) => {
   try {
     const {
        search,
@@ -575,7 +597,7 @@ app.get('/api/products', authenticateToken, async (req, res) => {
 // ======================
 // RUTAS DE CATEGORÍAS
 // ======================
-app.get('/api/categories', authenticateToken, async (req, res) => {
+app.get('/api/categories', async (req, res) => {
   try {
     try {
       // Intentar usar la base de datos primero
@@ -608,7 +630,7 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 // ======================
 // RUTAS DE DASHBOARD
 // ======================
-app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
+app.get('/api/dashboard/stats', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const start = startDate ? new Date(startDate) : subDays(new Date(), 30);
