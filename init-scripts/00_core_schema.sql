@@ -1,8 +1,8 @@
 -- ============================================================================
--- 🏗️ CORE SCHEMA - ESTRUCTURA BASE DEL SISTEMA
+-- 🏗️ CORE SCHEMA - ESTRUCTURA BASE DEL SISTEMA CON SAAS
 -- ============================================================================
 -- Archivo: init-scripts/00_core_schema.sql
--- Propósito: Estructura base compartida por todos los componentes
+-- Propósito: Estructura base compartida por todos los componentes + SaaS Multi-tenant
 -- Orden de ejecución: PRIMERO (00_)
 -- ============================================================================
 
@@ -15,6 +15,7 @@ CREATE SCHEMA IF NOT EXISTS stock;      -- Sistema de Stock Management
 CREATE SCHEMA IF NOT EXISTS shared;     -- Datos compartidos (órdenes, sesiones)
 CREATE SCHEMA IF NOT EXISTS n8n;        -- Configuración específica N8N
 CREATE SCHEMA IF NOT EXISTS analytics;  -- Vistas y reportes
+CREATE SCHEMA IF NOT EXISTS saas;       -- Sistema SaaS Multi-tenant
 
 -- 🔐 CONFIGURACIÓN DE PERMISOS
 DO $$
@@ -30,6 +31,7 @@ GRANT ALL PRIVILEGES ON SCHEMA stock TO commerce_user;
 GRANT ALL PRIVILEGES ON SCHEMA shared TO commerce_user;
 GRANT ALL PRIVILEGES ON SCHEMA n8n TO commerce_user;
 GRANT ALL PRIVILEGES ON SCHEMA analytics TO commerce_user;
+GRANT ALL PRIVILEGES ON SCHEMA saas TO commerce_user;
 GRANT ALL PRIVILEGES ON SCHEMA public TO commerce_user;
 
 -- ⚙️ FUNCIONES UTILITARIAS GLOBALES
@@ -74,6 +76,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- 🎯 FUNCIÓN PARA OBTENER ORGANIZACIÓN ACTUAL (RLS)
+CREATE OR REPLACE FUNCTION current_organization_id() RETURNS INTEGER AS $$
+BEGIN
+  RETURN NULLIF(current_setting('app.current_organization_id', true), '')::INTEGER;
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
 -- 📊 TIPOS DE DATOS CUSTOMIZADOS
 -- Enum para estados de orden
 DO $$ 
@@ -111,7 +123,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role_enum') THEN
         CREATE TYPE user_role_enum AS ENUM (
-            'admin', 'editor', 'viewer', 'api'
+            'owner', 'admin', 'editor', 'viewer', 'api'
         );
     END IF;
 END $$;
@@ -128,30 +140,64 @@ BEGIN
     END IF;
 END $$;
 
--- 🔍 CONFIGURACIÓN DE BÚSQUEDA FULL-TEXT
--- Configuración para español
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_ts_config 
-        WHERE cfgname = 'spanish_unaccent' 
-        AND cfgnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'pg_catalog')
-    ) THEN
-        CREATE TEXT SEARCH CONFIGURATION spanish_unaccent (COPY = spanish);
-    END IF;
-END $$;
+-- 🏢 ORGANIZACIONES SAAS (Base para multi-tenancy)
+CREATE TABLE IF NOT EXISTS saas.organizations (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(100) UNIQUE NOT NULL, -- URL: app.com/org/slug
+    logo_url VARCHAR(500),
+
+    -- Información de la empresa
+    business_name VARCHAR(255),
+    tax_id VARCHAR(50),
+    address TEXT,
+    phone VARCHAR(50),
+    email VARCHAR(255),
+
+    -- Plan y suscripción
+    subscription_plan VARCHAR(50) DEFAULT 'starter' CHECK (subscription_plan IN ('starter', 'professional', 'enterprise')),
+    subscription_status VARCHAR(30) DEFAULT 'active' CHECK (subscription_status IN ('active', 'suspended', 'cancelled', 'trial')),
+    subscription_started_at TIMESTAMP DEFAULT NOW(),
+    subscription_ends_at TIMESTAMP,
+
+    -- Límites del plan
+    max_users INTEGER DEFAULT 5,
+    max_products INTEGER DEFAULT 100,
+    max_monthly_orders INTEGER DEFAULT 500,
+    max_categories INTEGER DEFAULT 20,
+    storage_gb INTEGER DEFAULT 1,
+    features JSONB DEFAULT '{}',     -- {"reports": true, "api_access": false, etc}
+
+    -- Configuración
+    settings JSONB DEFAULT '{}',
+    allowed_domains JSONB DEFAULT '[]',     -- ["@empresa.com", "@otrodominio.com"]
+    is_active BOOLEAN DEFAULT true,
+
+    -- Auditoría
+    created_by INTEGER,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Trigger para updated_at en organizations
+CREATE TRIGGER update_organizations_updated_at
+    BEFORE UPDATE ON saas.organizations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ⚙️ CONFIGURACIÓN DEL SISTEMA
 CREATE TABLE IF NOT EXISTS shared.system_config (
     id SERIAL PRIMARY KEY,
-    config_key VARCHAR(100) UNIQUE NOT NULL,
+    organization_id INTEGER REFERENCES saas.organizations(id) ON DELETE CASCADE, -- Multi-tenant
+    config_key VARCHAR(100) NOT NULL,
     config_value TEXT,
     config_type VARCHAR(20) DEFAULT 'string' CHECK (config_type IN ('string', 'number', 'boolean', 'json')),
     description TEXT,
     is_public BOOLEAN DEFAULT false,
     updated_by INTEGER,
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    UNIQUE(organization_id, config_key) -- Configuración por organización
 );
 
 -- Trigger para updated_at en system_config
@@ -159,9 +205,10 @@ CREATE TRIGGER update_system_config_updated_at
     BEFORE UPDATE ON shared.system_config
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- 📝 TABLA DE LOGS GLOBAL
+-- 📝 TABLA DE LOGS GLOBAL (Multi-tenant)
 CREATE TABLE IF NOT EXISTS shared.activity_logs (
     id SERIAL PRIMARY KEY,
+    organization_id INTEGER REFERENCES saas.organizations(id) ON DELETE SET NULL,
     user_id INTEGER,
     action VARCHAR(50) NOT NULL,
     entity_type VARCHAR(50) NOT NULL,
@@ -176,14 +223,15 @@ CREATE TABLE IF NOT EXISTS shared.activity_logs (
 );
 
 -- Índices para activity_logs
-CREATE INDEX IF NOT EXISTS idx_activity_logs_user_date ON shared.activity_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_org_user_date ON shared.activity_logs(organization_id, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_entity ON shared.activity_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_action_date ON shared.activity_logs(action, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_source ON shared.activity_logs(source, created_at DESC);
 
--- 🚨 TABLA DE ALERTAS GLOBAL
+-- 🚨 TABLA DE ALERTAS GLOBAL (Multi-tenant)
 CREATE TABLE IF NOT EXISTS shared.system_alerts (
     id SERIAL PRIMARY KEY,
+    organization_id INTEGER REFERENCES saas.organizations(id) ON DELETE CASCADE,
     alert_type VARCHAR(50) NOT NULL,
     title VARCHAR(255) NOT NULL,
     message TEXT NOT NULL,
@@ -205,68 +253,72 @@ CREATE TRIGGER update_system_alerts_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Índices para system_alerts
+CREATE INDEX IF NOT EXISTS idx_system_alerts_org_unresolved ON shared.system_alerts(organization_id, created_at DESC) WHERE NOT is_resolved;
 CREATE INDEX IF NOT EXISTS idx_system_alerts_type_severity ON shared.system_alerts(alert_type, severity);
-CREATE INDEX IF NOT EXISTS idx_system_alerts_unresolved ON shared.system_alerts(created_at DESC) WHERE NOT is_resolved;
 CREATE INDEX IF NOT EXISTS idx_system_alerts_entity ON shared.system_alerts(entity_type, entity_id);
 
--- 📊 CONFIGURACIONES INICIALES DEL SISTEMA
-INSERT INTO shared.system_config (config_key, config_value, config_type, description, is_public) VALUES
-    -- Configuración general
-    ('app_name', 'Sistema de Gestión de Stock', 'string', 'Nombre de la aplicación', true),
-    ('app_version', '1.0.0', 'string', 'Versión de la aplicación', true),
-    ('currency_symbol', '$', 'string', 'Símbolo de moneda', true),
-    ('currency_code', 'ARS', 'string', 'Código de moneda (ISO 4217)', true),
-    ('timezone', 'America/Argentina/Buenos_Aires', 'string', 'Zona horaria del sistema', false),
+-- 📊 CONFIGURACIONES INICIALES DEL SISTEMA (Globales)
+INSERT INTO shared.system_config (organization_id, config_key, config_value, config_type, description, is_public) VALUES
+    -- Configuración general (sin organización = global)
+    (NULL, 'app_name', 'Sistema de Gestión de Stock', 'string', 'Nombre de la aplicación', true),
+    (NULL, 'app_version', '1.0.0', 'string', 'Versión de la aplicación', true),
+    (NULL, 'currency_symbol', '$', 'string', 'Símbolo de moneda', true),
+    (NULL, 'currency_code', 'ARS', 'string', 'Código de moneda (ISO 4217)', true),
+    (NULL, 'timezone', 'America/Argentina/Buenos_Aires', 'string', 'Zona horaria del sistema', false),
     
-    -- Configuración de stock
-    ('low_stock_threshold_percentage', '20', 'number', 'Porcentaje de stock mínimo para alertas', false),
-    ('auto_reorder_enabled', 'false', 'boolean', 'Habilitar reorden automático', false),
-    ('default_tax_rate', '21', 'number', 'Tasa de IVA por defecto (%)', true),
+    -- Configuración de stock por defecto
+    (NULL, 'low_stock_threshold_percentage', '20', 'number', 'Porcentaje de stock mínimo para alertas', false),
+    (NULL, 'auto_reorder_enabled', 'false', 'boolean', 'Habilitar reorden automático', false),
+    (NULL, 'default_tax_rate', '21', 'number', 'Tasa de IVA por defecto (%)', true),
     
     -- Configuración de N8N
-    ('n8n_webhook_timeout', '30', 'number', 'Timeout para webhooks N8N (segundos)', false),
-    ('n8n_rate_limit_per_minute', '100', 'number', 'Límite de requests por minuto', false),
-    ('n8n_enable_analytics', 'true', 'boolean', 'Habilitar analytics en N8N', false),
+    (NULL, 'n8n_webhook_timeout', '30', 'number', 'Timeout para webhooks N8N (segundos)', false),
+    (NULL, 'n8n_rate_limit_per_minute', '100', 'number', 'Límite de requests por minuto', false),
+    (NULL, 'n8n_enable_analytics', 'true', 'boolean', 'Habilitar analytics en N8N', false),
     
     -- Configuración de WhatsApp
-    ('whatsapp_session_timeout', '7200', 'number', 'Timeout de sesión WhatsApp (segundos)', false),
-    ('whatsapp_max_cart_items', '20', 'number', 'Máximo items en carrito', false),
-    ('whatsapp_enable_ai', 'true', 'boolean', 'Habilitar IA en respuestas', false),
-    
-    -- Configuración de negocio
-    ('business_name', 'Supermercado Digital', 'string', 'Nombre del negocio', true),
-    ('business_phone', '', 'string', 'Teléfono del negocio', true),
-    ('business_email', '', 'string', 'Email del negocio', true),
-    ('business_address', '', 'string', 'Dirección del negocio', true),
-    ('delivery_fee', '300', 'number', 'Costo de envío por defecto', true),
-    ('free_delivery_minimum', '5000', 'number', 'Monto mínimo para envío gratis', true)
-ON CONFLICT (config_key) DO UPDATE SET
+    (NULL, 'whatsapp_session_timeout', '7200', 'number', 'Timeout de sesión WhatsApp (segundos)', false),
+    (NULL, 'whatsapp_max_cart_items', '20', 'number', 'Máximo items en carrito', false),
+    (NULL, 'whatsapp_enable_ai', 'true', 'boolean', 'Habilitar IA en respuestas', false)
+ON CONFLICT (organization_id, config_key) DO UPDATE SET
     config_value = EXCLUDED.config_value,
     description = EXCLUDED.description,
     is_public = EXCLUDED.is_public,
     updated_at = NOW();
 
--- 🎯 FUNCIÓN PARA OBTENER CONFIGURACIÓN
-CREATE OR REPLACE FUNCTION get_config(key_name TEXT, default_value TEXT DEFAULT NULL)
+-- 🎯 FUNCIÓN PARA OBTENER CONFIGURACIÓN (Multi-tenant)
+CREATE OR REPLACE FUNCTION get_config(key_name TEXT, org_id INTEGER DEFAULT NULL, default_value TEXT DEFAULT NULL)
 RETURNS TEXT AS $$
 DECLARE
     config_val TEXT;
 BEGIN
+    -- Buscar configuración específica de organización primero
+    IF org_id IS NOT NULL THEN
+        SELECT config_value INTO config_val 
+        FROM shared.system_config 
+        WHERE config_key = key_name AND organization_id = org_id;
+        
+        IF config_val IS NOT NULL THEN
+            RETURN config_val;
+        END IF;
+    END IF;
+    
+    -- Buscar configuración global como fallback
     SELECT config_value INTO config_val 
     FROM shared.system_config 
-    WHERE config_key = key_name;
+    WHERE config_key = key_name AND organization_id IS NULL;
     
     RETURN COALESCE(config_val, default_value);
 END;
 $$ LANGUAGE plpgsql;
 
--- 🎯 FUNCIÓN PARA ESTABLECER CONFIGURACIÓN
-CREATE OR REPLACE FUNCTION set_config(key_name TEXT, value_text TEXT, user_id_param INTEGER DEFAULT NULL)
+-- 🎯 FUNCIÓN PARA ESTABLECER CONFIGURACIÓN (Multi-tenant)
+CREATE OR REPLACE FUNCTION set_config(key_name TEXT, value_text TEXT, org_id INTEGER DEFAULT NULL, user_id_param INTEGER DEFAULT NULL)
 RETURNS BOOLEAN AS $$
 BEGIN
-    INSERT INTO shared.system_config (config_key, config_value, updated_by)
-    VALUES (key_name, value_text, user_id_param)
-    ON CONFLICT (config_key) 
+    INSERT INTO shared.system_config (organization_id, config_key, config_value, updated_by)
+    VALUES (org_id, key_name, value_text, user_id_param)
+    ON CONFLICT (organization_id, config_key) 
     DO UPDATE SET 
         config_value = EXCLUDED.config_value,
         updated_by = EXCLUDED.updated_by,
@@ -279,8 +331,9 @@ $$ LANGUAGE plpgsql;
 -- ✅ VERIFICACIÓN DE INSTALACIÓN
 DO $$
 BEGIN
-    RAISE NOTICE '✅ Core Schema instalado correctamente';
-    RAISE NOTICE '📊 Esquemas creados: stock, shared, n8n, analytics';
+    RAISE NOTICE '✅ Core Schema con SaaS instalado correctamente';
+    RAISE NOTICE '📊 Esquemas creados: stock, shared, n8n, analytics, saas';
+    RAISE NOTICE '🏢 Sistema multi-tenant configurado';
     RAISE NOTICE '⚙️ Funciones utilitarias disponibles';
     RAISE NOTICE '🔐 Permisos configurados para commerce_user';
 END $$;
